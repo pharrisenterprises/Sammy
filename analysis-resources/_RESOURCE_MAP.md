@@ -16,17 +16,17 @@ It must be updated automatically every time any analysis prompt, breakdown promp
   - **04_dependencies.md** — Dependency analysis and roles (to be populated).
 
 - **analysis-resources/component-breakdowns/**  
-  Contains deep-dive documents for specific components and subsystems:
-  - **recording-engine_breakdown.md** — Recording Engine architecture, event capture, label detection strategies.
-  - **replay-engine_breakdown.md** — Replay Engine architecture, element finding, action execution.
-  - **locator-strategy_breakdown.md** — Locator Strategy System, multi-strategy resolution, confidence scoring.
-  - **storage-layer_breakdown.md** — Storage abstraction layer, providers, data models.
-  - **message-bus_breakdown.md** — Centralized messaging system, typed contracts, request/response handling.
-  - **ui-components_breakdown.md** — UI component library, design system, presentation layer.
-  - **csv-processing_breakdown.md** — CSV/Excel parsing, auto-mapping, data validation.
-  - **test-orchestrator_breakdown.md** — Test execution orchestrator, multi-row execution, result aggregation.
-  - **background-service_breakdown.md** — Background service worker coordination and lifecycle management.
-  - **content-script-system_breakdown.md** — Content script coordination, iframe injection, shadow DOM handling.
+  Contains deep-dive documents for specific components and subsystems (standardized 7-section format):
+  - **recording-engine_breakdown.md** — Event capture system, label detection, locator generation, interaction recording.
+  - **replay-engine_breakdown.md** — Step execution engine, multi-strategy element finding, action replay, React input handling.
+  - **locator-strategy_breakdown.md** — 9-tier element resolution system (XPath → ID → Name → fuzzy matching).
+  - **storage-layer_breakdown.md** — Dexie IndexedDB wrapper, message-based CRUD, test run tracking.
+  - **message-bus_breakdown.md** — chrome.runtime/tabs messaging infrastructure, 20+ action handlers, async coordination.
+  - **ui-components_breakdown.md** — React UI pages (Dashboard, Recorder, Mapper, Runner), Radix UI components.
+  - **csv-processing_breakdown.md** — PapaParse/XLSX parsing, auto-mapping with 0.3 threshold, field validation.
+  - **test-orchestrator_breakdown.md** — Multi-row execution loop, tab lifecycle, CSV value injection, timing control.
+  - **background-service_breakdown.md** — Service worker coordinator, message routing, tab management, script injection.
+  - **content-script-system_breakdown.md** — Dual-mode recording/replay, iframe coordination, shadow DOM penetration, cross-context messaging.
 
 - **analysis-resources/modularization-plans/**  
   Holds modular re-architecture plans for future rebuilding steps:
@@ -77,3 +77,18 @@ Every time a new file or folder is created in the analysis-resources tree:
 - All design prompts MUST reference files listed in this map.  
 - All code-generation prompts MUST reference modularization-plans and implementation-guides.  
 - All resource updates MUST be mirrored in this map immediately.
+
+---
+
+## PERMANENT RULE
+Every time ANY prompt, script, or automated process creates, deletes, or modifies
+a file inside the `analysis-resources/` directory, you MUST:
+
+1. Update `analysis-resources/_RESOURCE_MAP.md` accordingly  
+2. Add or modify entries for the affected files  
+3. Maintain alphabetical ordering within each section  
+4. Maintain consistent indentation and markdown hierarchy  
+5. Preserve ALL existing entries unless explicitly instructed otherwise  
+6. Treat the Resource Map as the authoritative index for the entire library
+
+Failure to update the Resource Map renders the task incomplete.
