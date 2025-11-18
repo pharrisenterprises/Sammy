@@ -1,0 +1,11 @@
+.box-css {
+  position: absolute;
+  height: 121px;
+  width: 119px;
+  top: 6%;
+  left: 30%;
+}
+
+.z-index-box {
+  z-index: 999999;
+}
