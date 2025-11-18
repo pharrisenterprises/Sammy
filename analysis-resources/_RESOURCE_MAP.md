@@ -8,7 +8,7 @@ It must be updated automatically every time any analysis prompt, breakdown promp
 
 - **analysis-resources/project-analysis/**  
   Holds outputs from the initial repo analysis phase:  
-  - 00_project-summary.md  
+  - **00_meta-analysis.md** — Master repo analysis: overview, stack, architecture, directory, dependencies, subsystem boundaries, and complexity map.
   - 01_stack-breakdown.md  
   - 02_architecture-map.md  
   - 03_folder-structure.md  
