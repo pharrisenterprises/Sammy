@@ -64,6 +64,19 @@ It must be updated automatically every time any analysis prompt, breakdown promp
   - **tech-links.md** — Links to external documentation, libraries, and resources (to be populated).
   - **code-notes.md** — Internal code notes, patterns, and architectural decisions (to be populated).
 
+- **analysis-resources/rollups/**  
+  Contains mid-tier rollup summaries that compress multiple detailed resources (component breakdowns, modularization plans, implementation guides) into shorter, highly-structured overview files for efficient AI prompt usage. Each rollup aggregates all analysis for a single subsystem:
+  - **background-service_rollup.md** — Aggregated summary of Background Service (central coordinator, message routing, tab management, script injection, storage coordination).
+  - **content-script-system_rollup.md** — Aggregated summary of Content Script System (dual-mode recording/replay, iframe coordination, shadow DOM penetration, cross-context messaging).
+  - **csv-processing_rollup.md** — Aggregated summary of CSV Processing Engine (file import, parsing, auto-mapping, field validation, data injection).
+  - **locator-strategy_rollup.md** — Aggregated summary of Locator Strategy System (multi-strategy generation, 9-tier fallback resolution, XPath/bundle contracts).
+  - **message-bus_rollup.md** — Aggregated summary of Message Bus (communication infrastructure, context bridging, request/response pairing, 20+ message actions).
+  - **recording-engine_rollup.md** — Aggregated summary of Recording Engine (event capture, 12+ label heuristics, locator generation, iframe/shadow DOM handling).
+  - **replay-engine_rollup.md** — Aggregated summary of Replay Engine (multi-strategy element finding, React-safe input handling, action execution, error recovery).
+  - **storage-layer_rollup.md** — Aggregated summary of Storage Layer (Dexie IndexedDB wrapper, project/test run CRUD, message-based coordination).
+  - **test-orchestrator_rollup.md** — Aggregated summary of Test Orchestrator (execution coordination, multi-row iteration, progress tracking, result collection).
+  - **ui-components_rollup.md** — Aggregated summary of UI Components (React pages, state management, Radix UI primitives, routing, styling).
+
 ## UPDATE RULES
 Every time a new file or folder is created in the analysis-resources tree:
 1. Add a new section to this _RESOURCE_MAP.md
