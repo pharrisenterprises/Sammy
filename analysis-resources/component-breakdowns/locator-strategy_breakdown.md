@@ -1,10 +1,61 @@
-# LOCATOR STRATEGY SYSTEM BREAKDOWN
+# locator-strategy_breakdown.md
 
-## 1. Summary
+## Purpose
+Element identification engine that generates multiple identifiers during recording (XPath, ID, name, CSS, aria) and uses fallback resolution during replay to handle DOM changes.
 
-The Locator Strategy System is the **element identification engine** that bridges the gap between recording and replay. It generates multiple identifiers during recording (XPath, ID, name, CSS, aria, etc.) and uses fallback resolution during replay. This system is critical for automation resilience—when one locator fails (e.g., dynamic IDs), others provide backup routes to the target element.
+## Inputs
+- **Generation Phase**: Target DOM element, parent document, iframe chain, shadow root context
+- **Resolution Phase**: Bundle object with recorded identifiers, timeout config (default 2000ms), target document/iframe
 
-**Importance**: ⭐⭐⭐⭐ (High - directly impacts replay success rate)
+## Outputs
+- **Generation**: Bundle object with id, name, className, dataAttrs, aria, placeholder, tag, visibleText, xpath, bounding rect, iframeChain, shadowHosts
+- **Resolution**: Found HTMLElement or null, confidence score (0-1) indicating match quality
+
+## Internal Architecture
+- **Generation Functions**: getXPath() with sibling indexing (50 lines), recordElement() comprehensive bundle builder (50 lines)
+- **Resolution Function**: findElementFromBundle() with 9-tier fallback (150 lines): XPath → ID+attributes → name → aria → placeholder → fuzzy text → bounding box → data attributes → retry with 150ms delay
+- **Strategy Priority**: Hardcoded ordering from highest (XPath 100%) to lowest (fuzzy text 40% threshold, bounding box 200px proximity)
+- **Shadow DOM Handler**: resolveXPathInShadow() traverses shadow boundaries using __realShadowRoot from interceptor
+- **Helper Functions**: visible() checks computed style, textSimilarity() word-based fuzzy matching, getDocumentFromIframeChain() resolves iframe context
+
+## Critical Dependencies
+- **Files**: src/contentScript/content.tsx (embedded in lines 400-450, 1050-1200)
+- **Libraries**: get-xpath (3.3.0, currently unused), xpath (0.0.34) for evaluation, string-similarity (4.0.4) for fuzzy matching
+- **Browser APIs**: document.evaluate() for XPath, querySelector/All for CSS, getElementById/Name/TagName for direct lookups
+- **Subsystems**: Recording Engine triggers generation, Replay Engine triggers resolution, Iframe Coordinator provides document context
+
+## Hidden Assumptions
+- Strategy priority is hardcoded and universal - may not be optimal for all site types
+- Fuzzy text threshold of 0.4 (40% similarity) is fixed - no per-site tuning
+- Bounding box proximity of 200px is constant - assumes elements don't move significantly
+- XPath with sibling indexing assumes stable DOM order - fails if items reorder
+- Shadow DOM resolution assumes __realShadowRoot property exists - requires page-interceptor
+- Retry logic uses fixed 150ms delay - not adaptive to page load speed
+
+## Stability Concerns
+- **Strategy Ordering**: Current priority hardcoded, adding new strategies requires modifying 150-line function
+- **False Positives**: 40% fuzzy threshold may match wrong elements with similar text
+- **Performance**: Brute-force tag scanning (getElementsByTagName) is O(n) on DOM size
+- **Timeout Tuning**: Fixed 2000ms may be too short for slow pages or too long for fast failures
+- **Maintenance**: Monolithic findElementFromBundle makes testing individual strategies difficult
+
+## Edge Cases
+- **Dynamic IDs**: React-generated IDs (react-1234) fail ID strategy immediately, fall to XPath
+- **Stale XPath**: DOM restructuring invalidates XPath, requires fallback to fuzzy strategies
+- **Identical Elements**: Multiple elements with same text/attributes confuse fuzzy matcher
+- **Hidden Elements**: Element exists but invisible - visible() check filters out, may miss valid targets
+- **Iframe Context Loss**: If iframe chain invalid (iframe removed), all strategies fail
+- **Shadow DOM Closed**: Un-intercepted closed shadow roots block all resolution attempts
+
+## Developer-Must-Know Notes
+- Locator logic is embedded in Recording and Replay engines - not isolated as separate module
+- Bundle structure is the contract between recording and replay - changes break all existing tests
+- Strategy priority cannot be configured at runtime - requires code changes
+- No caching of found elements - repeated queries re-execute full strategy chain
+- No confidence scoring across strategies - first successful find wins immediately
+- XPath generation uses get-xpath library but custom implementation used instead
+- textSimilarity() uses word set comparison (Dice coefficient) - case insensitive, whitespace normalized
+- Bounding box strategy calculates Euclidean distance from saved coordinates - nearest element wins
 
 ## 2. Primary Responsibilities
 

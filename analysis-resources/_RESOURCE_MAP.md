@@ -16,17 +16,17 @@ It must be updated automatically every time any analysis prompt, breakdown promp
   - **04_dependencies.md** — Dependency analysis and roles (to be populated).
 
 - **analysis-resources/component-breakdowns/**  
-  Contains deep-dive documents for specific components and subsystems (standardized 7-section format):
-  - **recording-engine_breakdown.md** — Event capture system, label detection, locator generation, interaction recording.
-  - **replay-engine_breakdown.md** — Step execution engine, multi-strategy element finding, action replay, React input handling.
-  - **locator-strategy_breakdown.md** — 9-tier element resolution system (XPath → ID → Name → fuzzy matching).
-  - **storage-layer_breakdown.md** — Dexie IndexedDB wrapper, message-based CRUD, test run tracking.
-  - **message-bus_breakdown.md** — chrome.runtime/tabs messaging infrastructure, 20+ action handlers, async coordination.
-  - **ui-components_breakdown.md** — React UI pages (Dashboard, Recorder, Mapper, Runner), Radix UI components.
-  - **csv-processing_breakdown.md** — PapaParse/XLSX parsing, auto-mapping with 0.3 threshold, field validation.
-  - **test-orchestrator_breakdown.md** — Multi-row execution loop, tab lifecycle, CSV value injection, timing control.
-  - **background-service_breakdown.md** — Service worker coordinator, message routing, tab management, script injection.
-  - **content-script-system_breakdown.md** — Dual-mode recording/replay, iframe coordination, shadow DOM penetration, cross-context messaging.
+  Contains concise technical rollups in standardized 9-section format (Purpose, Inputs, Outputs, Internal Architecture, Critical Dependencies, Hidden Assumptions, Stability Concerns, Edge Cases, Developer-Must-Know Notes):
+  - **background-service_breakdown.md** — Service worker coordinator: message routing, tab management, script injection, storage coordination.
+  - **content-script-system_breakdown.md** — Page-level automation: dual-mode recording/replay, iframe coordination, shadow DOM penetration.
+  - **csv-processing_breakdown.md** — Data import engine: CSV/Excel parsing, auto-mapping with 0.3 threshold, field validation.
+  - **locator-strategy_breakdown.md** — Element identification: multi-strategy generation, 9-tier fallback resolution, XPath/bundle contracts.
+  - **message-bus_breakdown.md** — Communication infrastructure: chrome.runtime/tabs messaging, 20+ action handlers, async coordination.
+  - **recording-engine_breakdown.md** — Event capture system: 12+ label heuristics, locator generation, iframe/shadow DOM handling.
+  - **replay-engine_breakdown.md** — Action execution engine: multi-strategy element finding, React-safe input, action replay.
+  - **storage-layer_breakdown.md** — Persistence layer: Dexie IndexedDB wrapper, project/test run CRUD, message-based coordination.
+  - **test-orchestrator_breakdown.md** — Execution coordinator: multi-row iteration, tab lifecycle, progress tracking, result collection.
+  - **ui-components_breakdown.md** — React UI layer: Dashboard/Recorder/Mapper/Runner pages, Radix UI primitives, state management.
 
 - **analysis-resources/modularization-plans/**  
   Holds modular re-architecture plans for future rebuilding steps:
@@ -41,13 +41,13 @@ It must be updated automatically every time any analysis prompt, breakdown promp
   - **test-orchestrator_mod-plan.md** — Test Orchestrator modularization plan (to be populated).
 
 - **analysis-resources/build-instructions/**  
-  Contains build pipeline designs and environment toolchain notes:
-  - **build-pipeline-overview.md** — Complete build system documentation: Vite configs, TypeScript, bundling, optimization strategies.
-  - **environment-requirements.md** — Development environment setup and requirements (to be populated).
+  Contains build pipeline documentation and environment setup (standardized 9-section rollup format):
+  - **build-pipeline-overview.md** — Build system: Vite configs, TypeScript compilation, Tailwind CSS, bundling, optimization strategies.
+  - **environment-requirements.md** — Development environment: Node.js versions, Chrome setup, VS Code extensions, system dependencies.
 
 - **analysis-resources/implementation-guides/**  
-  Contains detailed instructions used during later code-generation phases:
-  - **high-level-implementation.md** — Master implementation guide: principles, priorities, boundaries, workflows, quality standards.
+  Contains implementation instructions in standardized 9-section rollup format:
+  - **high-level-implementation.md** — Master implementation guide: TDD principles, phase priorities, module boundaries, quality standards, rollback strategies.
   - **recording-engine_impl.md** — Recording Engine implementation details (to be populated).
   - **replay-engine_impl.md** — Replay Engine implementation details (to be populated).
   - **locator-strategy_impl.md** — Locator Strategy implementation details (to be populated).

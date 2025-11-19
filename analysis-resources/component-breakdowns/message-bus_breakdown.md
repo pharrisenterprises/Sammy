@@ -1,10 +1,62 @@
-# MESSAGE BUS BREAKDOWN
+# message-bus_breakdown.md
 
-## 1. Summary
+## Purpose
+Communication infrastructure connecting all extension contexts (background, content scripts, popup, pages) using chrome.runtime, chrome.tabs, and window.postMessage APIs.
 
-The Message Bus is the **communication infrastructure** that connects all extension contexts (background, content scripts, popup, extension pages). It handles chrome.runtime messaging, chrome.tabs messaging, and window.postMessage for cross-context communication. This system enables UI components, background workers, and injected scripts to coordinate actions without direct coupling.
+## Inputs
+- **Background Messages**: { action: string, payload?: any } from extension pages (15+ action types)
+- **Content Script Messages**: { type: string, data: any } from background (runStep, pageLoaded)
+- **Cross-Context Messages**: { type: string, ...fields } via window.postMessage (logEvent, AUTOCOMPLETE_INPUT/SELECTION, REPLAY_AUTOCOMPLETE)
 
-**Importance**: ⭐⭐⭐⭐ (High - enables distributed architecture)
+## Outputs
+- Response format: { success: boolean, data?: any, error?: string, id?: number }
+- Event broadcasts: one-way messages (logEvent) from content script to extension pages
+- Command acknowledgements: async responses with operation results
+
+## Internal Architecture
+- **Background Router** (background.ts lines 15-270): chrome.runtime.onMessage listener with 20+ action handlers following pattern: extract payload → async operation → sendResponse → return true
+- **Content Script Listener** (content.tsx lines 800-850): Handles runStep messages, executes playAction(), returns success/failure via sendResponse
+- **Page Context Bridge** (page-interceptor.tsx + content.tsx): window.postMessage for shadow DOM events, window.addEventListener for message reception
+- **Action Types**: Storage ops (add/update/get/delete_project, test runs), tab management (openTab, close_opened_tab), recording events (logEvent)
+
+## Critical Dependencies
+- **Files**: src/background/background.ts, src/contentScript/content.tsx, src/contentScript/page-interceptor.tsx, all UI pages
+- **Browser APIs**: chrome.runtime.sendMessage/onMessage, chrome.tabs.sendMessage, window.postMessage/addEventListener
+- **Subsystems**: Connects UI ↔ Background ↔ Content Scripts ↔ Page Context, enables Recording Engine → Recorder UI, Test Runner → Replay Engine
+
+## Hidden Assumptions
+- Message channel requires 'return true' in listener for async operations - forgetting causes silent failures
+- Action names are magic strings - typos cause message routing failures ("get_all_project" vs "get_all_projects")
+- Chrome message size limit (64MB) - large payloads (CSV data) could fail serialization
+- No timeout handling - messages can hang indefinitely if handler never responds
+- No request tracking - cannot correlate request/response pairs for debugging
+- window.postMessage trusts origin="*" - no security validation of message source
+
+## Stability Concerns
+- **Missing Return True**: Forgetting 'return true' in async handlers causes responses to fail silently
+- **Type Inconsistency**: Different message formats ("action" vs "type" field) across contexts creates confusion
+- **No Message Registry**: Action names not centrally defined - easy to introduce typos
+- **Context Confusion**: Hard to trace which context originated a message in distributed flow
+- **Weak Type Safety**: TypeScript doesn't enforce message contracts at runtime
+- **Race Conditions**: Messages can arrive out of order or be dropped without notification
+
+## Edge Cases
+- **Service Worker Suspension**: Background script (Manifest V3) can terminate mid-message - messages lost
+- **Tab Closure**: chrome.tabs.sendMessage fails if target tab closed - no graceful degradation
+- **Cross-Origin Iframes**: Cannot sendMessage to cross-origin content scripts - silently fails
+- **Multiple Listeners**: If multiple handlers registered for same action, only first response used
+- **Serialization Failures**: Complex objects with functions/DOM nodes cannot be passed via messages
+- **Concurrent Requests**: No queuing mechanism - rapid-fire messages may overwhelm handlers
+
+## Developer-Must-Know Notes
+- Background router has 20+ action handlers - adding new actions requires modifying monolithic listener
+- Message format differs by context: "action" in background messages, "type" in content/page messages
+- chrome.runtime.sendMessage is async but uses callback pattern, not Promises (legacy API)
+- window.postMessage requires checking event.source === window to prevent external message injection
+- sendResponse must be called synchronously OR listener must return true - mixed semantics
+- Content script logEvent() broadcasts to all extension pages - no targeted messaging
+- Replay commands use chrome.tabs.sendMessage requiring specific tabId - stored in background global state
+- Page-context scripts cannot access chrome APIs - must relay through content script via window.postMessage
 
 ## 2. Primary Responsibilities
 

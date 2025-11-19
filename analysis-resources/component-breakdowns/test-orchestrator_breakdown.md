@@ -1,10 +1,66 @@
-# TEST ORCHESTRATOR BREAKDOWN
+# test-orchestrator_breakdown.md
 
-## 1. Summary
+## Purpose
+Execution coordination system that manages end-to-end test runs by opening tabs, injecting scripts, iterating CSV rows, sending replay commands, tracking progress, and storing execution history.
 
-The Test Orchestrator is the **execution coordination system** that manages end-to-end test runs. It opens browser tabs, injects content scripts, iterates through CSV data rows, sends replay commands, tracks progress, collects results, and stores execution history. This component orchestrates all other subsystems to achieve fully automated data-driven testing.
+## Inputs
+- Project data: recorded steps[], field mappings (parsed_fields[]), target URL from storage
+- CSV data: array of data rows or empty array for no-data mode
+- Execution config: timeout settings, retry behavior (hardcoded defaults)
 
-**Importance**: ⭐⭐⭐⭐⭐ (Critical - brings entire automation system together)
+## Outputs
+- Real-time logs: timestamped execution events (info, success, error, warning levels)
+- Step status updates: per-step progress (pending → running → passed/failed)
+- Test run results: saved to IndexedDB with { id, project_id, status, start_time, end_time, total_steps, passed_steps, failed_steps, test_results[], logs }
+- Progress percentage: calculated from passed+failed vs total steps
+
+## Internal Architecture
+- **Lifecycle Manager** (TestRunner.tsx lines 100-200): runTest() initialization, isRunningRef state tracking, cleanup on stop
+- **Multi-Row Iteration** (lines 200-400): rowsToProcess loop with CSV validation, row skipping if no matching labels found
+- **Step Sequencing** (lines 400-500): Sequential step execution with chrome.tabs.sendMessage per step, await response before next
+- **Value Injection** (lines 250-300): mappingLookup object maps CSV columns to step labels, injects row[csvKey] as step value
+- **Progress Tracking** (lines 500-550): Increment passed/failed counters, update progress percentage, refresh UI state
+- **Error Handling** (lines 550-600): Try-catch per step, log failures, continue execution (fail-soft), aggregate errors
+- **Result Collection** (lines 600-650): Aggregate passed/failed counts, execution time, save test run to DB
+
+## Critical Dependencies
+- **Files**: src/pages/TestRunner.tsx (809 lines), src/components/Runner/TestConsole.tsx, TestResults.tsx, TestSteps.tsx
+- **Subsystems**: Background Service for tab management, Replay Engine via chrome.tabs.sendMessage, Storage Layer for project/test run persistence, Field Mapper for CSV-to-step associations
+- **Browser APIs**: chrome.runtime.sendMessage (background coordination), chrome.tabs.sendMessage (content script commands)
+
+## Hidden Assumptions
+- CSV rows validated by checking if any CSV key matches step labels - skips rows with no matches
+- Steps executed sequentially, never parallel - assumes order dependency
+- Tab opened once per test run - reuses same tab for all CSV rows
+- Field mappings use exact label matching - case sensitive, whitespace significant
+- Test run saved to DB even if all steps fail - no rollback on total failure
+- Content script already injected before first step sent - no injection verification
+
+## Stability Concerns
+- **No Tab State Verification**: Assumes tab ready for next step immediately after previous completes
+- **No Retry Logic**: Single failure marks step as failed - no automatic retry attempts
+- **Sequential Execution**: One failed step doesn't stop entire test, but slow steps block progress
+- **Memory Accumulation**: All logs kept in state - long tests with many rows could cause memory issues
+- **No Timeout Per Step**: Waits indefinitely for chrome.tabs.sendMessage response
+- **Global isRunningRef**: Stop button sets flag but doesn't cancel in-flight messages
+
+## Edge Cases
+- **Empty CSV**: If csv_data=[], creates single empty row {} for one-time execution
+- **No Matching Fields**: CSV row skipped entirely if no keys match step labels or mappings
+- **Tab Closed Mid-Execution**: chrome.tabs.sendMessage fails silently, logged as error, continues to next step
+- **Multiple Identical Labels**: If two steps have same label, CSV value injected into both
+- **Invalid CSV Values**: No type validation - passes any CSV value as string to replay engine
+- **Test Run ID Collision**: Auto-increment ID from DB, but no handling for concurrent test runs
+
+## Developer-Must-Know Notes
+- TestRunner.tsx is 809 lines - should be split into orchestrator service + UI component
+- isRunningRef used instead of isRunning state for immediate stop response (state updates async)
+- mappingLookup inverts parsed_fields[] for O(1) CSV key → step label lookup
+- Test execution flow: openTab → inject script → for each row { for each step { sendMessage } }
+- Logs array grows unbounded - consider circular buffer or lazy loading for long tests
+- Progress calculation: (passed + failed) / total_steps * 100 - doesn't account for skipped steps
+- TestRun.test_results[] stores per-step outcomes - duplicates info from logs array
+- No pause/resume functionality - stop button terminates immediately
 
 ## 2. Primary Responsibilities
 

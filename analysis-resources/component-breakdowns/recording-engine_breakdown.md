@@ -1,10 +1,62 @@
-# RECORDING ENGINE BREAKDOWN
+# recording-engine_breakdown.md
 
-## 1. Summary
+## Purpose
+Core event capture system that monitors and records all user interactions (clicks, inputs, keyboard events) on web pages, transforming them into structured, replay-able steps with multiple locator strategies.
 
-The Recording Engine is the **core event capture system** responsible for monitoring and recording all user interactions on web pages. It captures clicks, inputs, keyboard events, and navigation actions, then transforms them into structured, replay-able steps with multiple locator strategies. This is one of the most critical and complex components in the entire system, as the quality of recordings directly determines replay success rates.
+## Inputs
+- User interactions: mouse clicks, keyboard input, form interactions, navigation events
+- DOM state: current page structure, iframe hierarchy, shadow DOM state
+- Configuration: recording enabled/disabled state from Recorder UI
 
-**Importance**: ⭐⭐⭐⭐⭐ (Critical - foundation of the entire automation system)
+## Outputs
+- Recorded steps: structured event objects with eventType, xpath, value, label, coordinates, and comprehensive element bundles
+- Log events: real-time capture notifications broadcast to Recorder UI via chrome.runtime.sendMessage
+- Element bundles: comprehensive metadata packages containing ID, name, className, data attributes, aria labels, XPath, bounding box, iframe chain
+
+## Internal Architecture
+- **Event Handlers** (content.tsx lines 1-700): handleClick(), handleInput(), handleKeyDown() with special cases for Select2, radio, checkbox, contenteditable
+- **Label Detection Engine** (lines 200-450): 12+ heuristic strategies including Google Forms, Bootstrap layouts, aria-label, placeholder, label tags, nearest text nodes
+- **Locator Generators** (lines 450-550): getXPath(), recordElement(), getOriginalSelect() for comprehensive bundle creation
+- **Iframe Management** (lines 550-650): attachToAllIframes() recursive listener attachment, getIframeChain() path serialization
+- **Shadow DOM Support** (lines 650-750): getFocusedElement() traversal, coordination with page-interceptor.tsx for closed shadow root exposure
+- **Initialization** (lines 750-850): initContentScript() entry point, dynamic script injection helper
+
+## Critical Dependencies
+- **Files**: src/contentScript/content.tsx (1,446 lines monolith), src/contentScript/page-interceptor.tsx (shadow DOM interception)
+- **Libraries**: get-xpath for path generation, Chrome APIs (chrome.runtime.sendMessage, chrome.tabs)
+- **Browser APIs**: DOM Event API, Shadow DOM API, MutationObserver for dynamic content
+- **Subsystems**: Background Service for injection commands, Page Interceptor for shadow DOM events via window.postMessage
+
+## Hidden Assumptions
+- Label detection relies on site-specific patterns (Bootstrap, Google Forms, Material-UI) that break with UI updates
+- Shadow DOM monkey-patching via Element.prototype.attachShadow interception could break with browser updates
+- Event listeners attached recursively to all iframes - assumes cross-origin frames will fail gracefully
+- Synthetic events (React-generated) filtered out by checking event.isTrusted flag
+- Select2 dropdowns resolved to original select elements using complex DOM traversal
+
+## Stability Concerns
+- **Monolithic Design**: 1,446 lines in single file makes testing and maintenance difficult
+- **Brittle Heuristics**: Label detection patterns are site-specific and fragile
+- **Memory Leaks**: Event listeners not properly cleaned up when recording stops
+- **Race Conditions**: Async iframe loading vs. listener attachment timing issues
+- **Performance**: Recursive iframe traversal can slow down complex pages with many nested frames
+
+## Edge Cases
+- **Dynamic iframes**: New iframes appearing after recording starts require MutationObserver detection
+- **Closed shadow DOM**: Requires page-interceptor.tsx injection before components load
+- **Google Autocomplete**: Special handling via closed shadow root exposure and event forwarding
+- **Contenteditable divs**: Treated as input fields, extract innerText/textContent
+- **Select2 dropdowns**: Click on styled div triggers lookup of hidden select element
+- **Radio/checkbox groups**: Match by aria-label or role container, not individual inputs
+
+## Developer-Must-Know Notes
+- Recording Engine handles BOTH recording AND replay logic (dual responsibility - should be split)
+- Bundle structure is critical contract between Recording and Replay - changes break compatibility
+- Label detection strategies run in priority order - first match wins (no confidence scoring)
+- XPath generation uses sibling indexing ([1], [2]) for uniqueness but fails if DOM reorders
+- Page-interceptor.tsx MUST inject before shadow DOM components initialize - timing sensitive
+- content.tsx contains ~600 lines of replay logic that belongs in separate module
+- Event listeners use composedPath() to traverse shadow boundaries during event capture
 
 ## 2. Primary Responsibilities
 

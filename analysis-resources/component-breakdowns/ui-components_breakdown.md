@@ -1,10 +1,65 @@
-# UI COMPONENTS BREAKDOWN
+# ui-components_breakdown.md
 
-## 1. Summary
+## Purpose
+Presentation and interaction layer providing user-facing interfaces for project management, step recording, field mapping, and test execution using React, Tailwind CSS, and Radix UI.
 
-The UI Components system is the **presentation and interaction layer** that provides user-facing interfaces for project management, step recording, field mapping, and test execution. Built with React, Tailwind CSS, and Radix UI primitives, it offers a modern, accessible interface distributed across four major pages: Dashboard, Recorder, Field Mapper, and Test Runner.
+## Inputs
+- Project data: from storage via chrome.runtime.sendMessage (project lists, details, recorded steps)
+- Real-time events: recording events via chrome.runtime.onMessage, replay progress updates
+- User interactions: clicks, form inputs, file uploads, drag-and-drop
+- Navigation: URL parameters (e.g., ?project=123) for context
 
-**Importance**: ⭐⭐⭐⭐ (High - primary user interaction point)
+## Outputs
+- User actions: create/update/delete projects, start/stop recording, run tests via chrome.runtime.sendMessage
+- Configuration: field mappings, CSV associations, project settings saved to storage
+- Visual feedback: alerts, notifications, loading states, error messages
+- Routing: React Router navigation between pages
+
+## Internal Architecture
+- **Pages** (4 major): Dashboard (1,286 lines), Recorder (626 lines), FieldMapper (523 lines), TestRunner (809 lines)
+- **Component Libraries**: Dashboard/ (CreateProjectDialog, EditProjectModal, ProjectStats), Recorder/ (RecorderToolbar, StepsTable, LogPanel), Mapper/ (FieldMappingTable, MappingSummary), Runner/ (TestConsole, TestResults, TestSteps), Ui/ (Radix wrappers)
+- **State Management**: Local React hooks (useState, useEffect) for component state, minimal Redux (theme only)
+- **Routing**: React Router DOM with hash routing (#/dashboard, #/recorder, #/mapper, #/runner)
+- **Styling**: Tailwind CSS utility classes, Radix UI unstyled primitives, custom CSS for specific components
+
+## Critical Dependencies
+- **Libraries**: React (18.2.0), React Router DOM (6.24.0), Radix UI (dialogs, dropdowns, tabs), Tailwind CSS (3.4.17), Lucide React (icons), @hello-pangea/dnd (drag-drop), date-fns (formatting)
+- **Subsystems**: Background Service for storage operations, Recording Engine for event capture, Replay Engine for step execution, Field Mapper for CSV processing
+- **Browser APIs**: chrome.runtime.sendMessage/onMessage for backend communication
+
+## Hidden Assumptions
+- Project ID passed via URL hash query params - no centralized routing state
+- All storage operations async via messages - components assume eventual consistency
+- Recording events broadcast to all open extension pages - components filter by active project
+- Drag-and-drop uses @hello-pangea/dnd (fork of react-beautiful-dnd) - no native HTML5 drag API
+- Date formatting always uses date-fns - assumes UTC timestamps from storage
+- Components directly call chrome.runtime.sendMessage - no abstraction layer
+
+## Stability Concerns
+- **Large File Sizes**: Dashboard (1,286 lines), TestRunner (809 lines) exceed recommended 400-line limit
+- **Mixed State Patterns**: Some components use local state, others use props drilling, no consistent state management
+- **Redundant Libraries**: Multiple UI libraries (Radix + Material-UI + Flowbite) - inconsistent component usage
+- **No Error Boundaries**: Unhandled React errors crash entire page - no graceful degradation
+- **Direct Chrome API Calls**: Components tightly coupled to chrome.runtime - difficult to test or port
+- **No Loading States**: Some async operations lack loading indicators - users see stale data
+
+## Edge Cases
+- **Missing Project ID**: If URL param missing, components show error or redirect to dashboard
+- **Concurrent Edits**: Two tabs editing same project - last save wins, no conflict resolution
+- **Message Failures**: If chrome.runtime.sendMessage fails, components show generic error toast
+- **Stale Data**: Components don't auto-refresh - require manual reload to see changes from other tabs
+- **Large Step Lists**: StepsTable with 1000+ steps causes slow rendering - no virtualization
+- **CSV Upload Errors**: File parsing errors shown as alert, but file input not cleared
+
+## Developer-Must-Know Notes
+- All pages use useEffect with empty dependency array [] to load data on mount
+- chrome.runtime.sendMessage uses callback pattern, not Promises - mixing async/await with callbacks
+- Recorder receives events via chrome.runtime.onMessage - must filter by project ID
+- TestRunner stores isRunning in ref (isRunningRef) not state for immediate stop without re-render
+- Drag-and-drop in StepsTable uses onDragEnd callback to reorder recordedSteps array
+- Field Mapper auto-mapping uses string-similarity library with 0.3 threshold
+- Dashboard project stats calculated client-side - no backend aggregation
+- All forms use controlled inputs (value + onChange) - no uncontrolled refs
 
 ## 2. Primary Responsibilities
 

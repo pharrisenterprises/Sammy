@@ -1,10 +1,66 @@
-# BACKGROUND SERVICE BREAKDOWN
+# background-service_breakdown.md
 
-## 1. Summary
+## Purpose
+Central coordinator running as Manifest V3 service worker that manages persistent state, routes messages between contexts, controls tab lifecycle, injects content scripts, and coordinates IndexedDB operations.
 
-The Background Service is the **central coordinator** for the Chrome extension, running as a Manifest V3 service worker. It manages persistent state, routes messages between contexts, controls tab lifecycle, injects content scripts, and coordinates IndexedDB operations. This component is the nervous system connecting all extension parts.
+## Inputs
+- Messages from extension pages: { action: string, payload?: any } with 15+ action types
+- Tab events: webNavigation.onCommitted, onCompleted for page load monitoring
+- Installation events: onInstalled for extension lifecycle
+- Icon clicks: action.onClicked to open dashboard
 
-**Importance**: ⭐⭐⭐⭐⭐ (Critical - enables distributed architecture)
+## Outputs
+- Responses to callers: { success: boolean, data?: any, id?: number, tabId?: number, error?: string }
+- Tab operations: chrome.tabs.create() for new tabs, chrome.tabs.remove() for cleanup
+- Script injections: chrome.scripting.executeScript() to inject content scripts
+- Storage operations: proxied to Dexie DB singleton
+
+## Internal Architecture
+- **Message Router** (background.ts lines 15-270): chrome.runtime.onMessage listener with 20+ action handlers following pattern: extract payload → async DB operation → sendResponse → return true
+- **Tab Manager** (lines 100-150): openedTabId global tracking, trackedTabs Set for multi-tab support, injectMain() helper for script injection
+- **Storage Coordinator** (lines 15-200): Routes storage actions (add/update/get/delete_project, test run operations) to DB methods
+- **Lifecycle Handlers** (lines 1-15): ensurePersistentStorage() on startup, onInstalled event listener
+- **Navigation Listeners** (lines 270-320): webNavigation events for page load detection and script re-injection
+
+## Critical Dependencies
+- **Files**: src/background/background.ts (347 lines service worker)
+- **Libraries**: dexie via DB singleton for IndexedDB operations
+- **Browser APIs**: chrome.runtime (onMessage, sendMessage), chrome.tabs (create, remove, sendMessage), chrome.scripting (executeScript), chrome.webNavigation (onCommitted, onCompleted), chrome.action (onClicked), navigator.storage.persist()
+- **Subsystems**: Routes between UI Components ↔ Storage Layer, Test Runner ↔ Content Scripts
+
+## Hidden Assumptions
+- Service worker can be suspended at any time (Manifest V3) - must not rely on in-memory state surviving
+- openedTabId global tracks last opened tab - assumes single recording session at a time
+- Script injection uses chrome.scripting.executeScript with files array - scripts must be in manifest web_accessible_resources
+- navigator.storage.persist() requested but not guaranteed - browser may revoke at any time
+- All message handlers return true to keep channel open - forgetting causes silent failures
+- webNavigation events fire for all tabs - handlers must filter by trackedTabs Set
+
+## Stability Concerns
+- **Service Worker Suspension**: Can terminate mid-operation, losing openedTabId and trackedTabs state
+- **No State Persistence**: Global variables (openedTabId, trackedTabs) not persisted to chrome.storage - lost on restart
+- **Single Tab Tracking**: openedTabId assumes one active recording - doesn't support concurrent sessions
+- **Injection Timing**: injectMain() called immediately after tab creation - may execute before page loads
+- **No Retry Logic**: Failed injections not retried - content script missing causes replay failures
+- **Message Handler Errors**: Try-catch only in some handlers - unhandled errors crash service worker
+
+## Edge Cases
+- **Rapid Tab Operations**: Opening/closing tabs quickly may cause race conditions with openedTabId tracking
+- **Cross-Origin Frames**: Script injection fails silently for cross-origin iframes - no error notification
+- **Tab Navigation**: If user navigates tracked tab to different URL, content script lost - no re-injection
+- **Concurrent Projects**: Multiple projects opened in different tabs - trackedTabs doesn't associate tab with project
+- **Service Worker Restart**: openedTabId reset to null, orphans any open recording tabs
+- **Injection Failure**: chrome.scripting.executeScript errors not propagated to caller - assumes success
+
+## Developer-Must-Know Notes
+- background.ts runs in service worker context - no access to DOM, window, or localStorage
+- All async operations must use 'return true' pattern in onMessage listener to keep response channel open
+- DB singleton imported from indexedDB.ts - service worker has IndexedDB access via Dexie
+- injectMain() injects js/main.js - path relative to extension root, must match build output
+- trackedTabs Set stores tabIds but not project context - cannot determine which project tab belongs to
+- ensurePersistentStorage() called on startup but persistence not guaranteed - quota limits still apply
+- chrome.action.onClicked only fires if no popup defined in manifest - used to open dashboard
+- webNavigation listeners fire for all navigation events - must check trackedTabs.has(tabId)
 
 ## 2. Primary Responsibilities
 

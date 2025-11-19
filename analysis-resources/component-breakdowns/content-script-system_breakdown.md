@@ -1,10 +1,68 @@
-# CONTENT SCRIPT SYSTEM BREAKDOWN
+# content-script-system_breakdown.md
 
-## 1. Summary
+## Purpose
+Page-level automation infrastructure combining recording, replay, shadow DOM handling, and cross-context communication. Runs in content script context (isolated from page JavaScript) and coordinates with page-injected scripts.
 
-The Content Script System is the **page-level automation infrastructure** that combines recording, replay, shadow DOM handling, and cross-context communication. It runs in the browser's content script context (isolated from page JavaScript) and coordinates with page-injected scripts to handle special cases like closed shadow roots and Google Autocomplete.
+## Inputs
+- **Recording Mode**: User interactions (clicks, inputs, keyboard events), DOM element references, event coordinates
+- **Replay Mode**: chrome.tabs.sendMessage with { type: "runStep", data: { event, bundle, value, label } }
+- **Page Context**: window.postMessage with AUTOCOMPLETE_INPUT/SELECTION events from page-interceptor.tsx
 
-**Importance**: ⭐⭐⭐⭐⭐ (Critical - bridges extension and web pages)
+## Outputs
+- **Recording Events**: chrome.runtime.sendMessage({ type: "logEvent", data: { eventType, xpath, bundle, value, label, page, x, y } }) to extension pages
+- **Replay Results**: sendResponse(success: boolean) back to Test Runner
+- **Page Commands**: window.postMessage({ type: "REPLAY_AUTOCOMPLETE", actions: [...] }) to page context replay.ts
+- **Notification UI**: Temporary overlay div showing step progress (loading/success/error)
+
+## Internal Architecture
+- **Dual-Mode Handler** (content.tsx lines 1-1,446): Recording logic (lines 1-800), replay logic (lines 850-1,446), shared helpers (lines 200-450)
+- **Event Listeners** (lines 50-400): handleClick(), handleInput(), handleKeyDown() attached to document + all iframes recursively
+- **Iframe Coordinator** (lines 550-650): attachToAllIframes() with MutationObserver for dynamic iframe detection, recursive injection
+- **Shadow DOM Integration**: getFocusedElement() traverses shadow boundaries, resolveXPathInShadow() uses __realShadowRoot from interceptor
+- **Script Injection** (lines 750-800): injectScript() dynamically adds page-interceptor.tsx and replay.ts to page context
+- **Message Bridge** (lines 800-850): chrome.runtime.onMessage for replay commands, window.addEventListener("message") for page events
+- **Page-Context Scripts**: page-interceptor.tsx (107 lines) monkey-patches Element.prototype.attachShadow, replay.ts (152 lines) handles Google Autocomplete
+
+## Critical Dependencies
+- **Files**: src/contentScript/content.tsx (1,446 lines monolith), page-interceptor.tsx (shadow DOM), replay.ts (autocomplete)
+- **Libraries**: get-xpath (unused, custom implementation used), React (minimal usage in Layout component)
+- **Browser APIs**: DOM Event API, Shadow DOM API (shadowRoot, getRootNode), MutationObserver, chrome.runtime messaging, window.postMessage
+- **Subsystems**: Recording Engine (embedded), Replay Engine (embedded), Message Bus (chrome.runtime + window.postMessage)
+
+## Hidden Assumptions
+- Content script loads before any shadow DOM components initialize - page-interceptor must inject early
+- Iframe recursion assumes cross-origin iframes fail gracefully with try-catch - no explicit CORS handling
+- MutationObserver detects new iframes - assumes childList mutations fire reliably
+- window.postMessage uses origin="*" - trusts all messages, no origin validation
+- Notification overlay uses fixed z-index 999999 - assumes no page elements exceed this
+- Script injection uses injectScript() helper - assumes scripts built to dist/ directory
+- Shadow DOM __realShadowRoot property set by page-interceptor - timing dependent
+
+## Stability Concerns
+- **Monolithic Design**: 1,446 lines mixing recording, replay, helpers - difficult to test and maintain
+- **Script Injection Timing**: page-interceptor.tsx must load before shadow components - race condition risk
+- **Memory Leaks**: Event listeners attached recursively to iframes - not properly cleaned up when recording stops
+- **Global State**: Recording state tracked in component scope - no persistence across page reloads
+- **No Error Boundaries**: Uncaught errors in event handlers crash entire content script
+- **Cross-Origin Limitations**: Cannot inject into cross-origin iframes - silently fails
+
+## Edge Cases
+- **Dynamic Iframes**: MutationObserver catches new iframes but may miss rapid additions/removals
+- **Closed Shadow DOM**: Requires page-interceptor monkey patch - fails if script loads after component initialization
+- **Google Autocomplete**: Special case requiring page-context replay.ts - doesn't work from content script alone
+- **Nested Shadow Roots**: Multiple shadow boundaries require recursive traversal - limited by __realShadowRoot availability
+- **Iframe Navigation**: If iframe src changes, event listeners lost - no automatic re-attachment
+- **Multiple Content Scripts**: If page loads multiple times, duplicate listeners attached - events fire multiple times
+
+## Developer-Must-Know Notes
+- content.tsx contains BOTH recording AND replay logic - should be split into separate modules
+- Layout component uses React but rest of file is plain TypeScript - inconsistent architecture
+- Event listeners use composedPath() to traverse shadow boundaries during capture
+- page-interceptor.tsx runs in page context - has full access to page JavaScript but no chrome APIs
+- replay.ts also runs in page context - receives commands via window.postMessage from content script
+- Notification UI created with document.createElement - not React components
+- attachToAllIframes() uses recursive try-catch - assumes cross-origin failures throw errors
+- window.postMessage messages must be JSON-serializable - cannot pass DOM nodes or functions
 
 ## 2. Primary Responsibilities
 

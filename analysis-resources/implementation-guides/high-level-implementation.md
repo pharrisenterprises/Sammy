@@ -1,25 +1,73 @@
-# HIGH-LEVEL IMPLEMENTATION GUIDE
+# high-level-implementation.md
 
-## PURPOSE
-This document provides a systematic approach for AI code designers working on the Sammy browser automation extension. It establishes rules, priorities, and workflows for implementing modular refactoring and new features while maintaining code quality and system stability.
+## Purpose
+Systematic approach guide for AI code designers working on Sammy browser automation extension, establishing rules, priorities, and workflows for modular refactoring and feature implementation while maintaining quality and stability.
 
----
+## Inputs
+- Existing codebase: 1,446-line monolithic content.tsx, 809-line TestRunner, 1,286-line Dashboard
+- Analysis resources: component breakdowns, modularization plans, architecture docs in analysis-resources/ directory
+- Requirements: Feature requests, bug reports, refactoring goals
+- Constraints: Zero test coverage, no CI/CD, Manifest V3 service worker limitations
 
-## GUIDING PRINCIPLES
+## Outputs
+- Refactored modules: Extracted services following single responsibility principle
+- Unit tests: 80%+ coverage for core modules (Recording, Replay, Storage)
+- Integration tests: Cross-module workflow validation
+- Documentation: Updated breakdown docs, implementation guides, API docs
+- Pull requests: Incremental changes with clear commit messages, test results, coverage reports
 
-### 1. Resource Library First
-**Rule**: ALWAYS consult the analysis-resources/ directory before making changes.
+## Internal Architecture
+- **Guiding Principles**: (1) Resource library first - read breakdowns/plans before coding, (2) Test-driven development - write tests before implementation, (3) Incremental migration - one module at a time with adapter layers, (4) Interface-first design - define TypeScript interfaces before implementation, (5) Configuration over hardcoding - externalize magic numbers and heuristics
+- **Implementation Priorities**: Phase 1 Foundation (Weeks 1-5): Recording Engine, Replay Engine, Message Bus extraction; Phase 2 Infrastructure (Weeks 6-8): Storage abstraction, UI component refactoring; Phase 3 Application Logic (Weeks 9-10): CSV processing, Test orchestrator; Phase 4 Quality (Weeks 11-14): Test coverage, configuration system, performance optimization
+- **Module Boundaries**: Dependency rules (UI → Application → Core Engine → Infrastructure → Foundation), forbidden circular dependencies, enforced via ESLint no-cycle rule
+- **Code Quality Standards**: Max 400 lines per file, 50 lines per function, cyclomatic complexity < 10, JSDoc for all public interfaces
+- **Testing Strategy**: Unit tests with mocks, integration tests with minimal mocking, E2E tests with Playwright for Chrome extension
 
-**Required Reading Before Any Work**:
-- `analysis-resources/project-analysis/00_meta-analysis.md` - Understand the system
-- `analysis-resources/modularization-plans/00_modularization-overview.md` - Know the target architecture
-- `analysis-resources/_RESOURCE_MAP.md` - Navigate available resources
+## Critical Dependencies
+- **Analysis Resources**: component-breakdowns/ (10 files), modularization-plans/ (9 files), implementation-guides/ (6 files), _RESOURCE_MAP.md master index
+- **Testing Tools**: Jest for unit tests, React Testing Library for UI tests, Playwright for E2E extension testing
+- **Quality Tools**: ESLint with no-cycle plugin, TypeScript strict mode, tsc --noEmit for type checking
+- **Build Tools**: Vite for bundling, TypeScript for compilation, SWC for fast transpilation
 
-**Why**: The resource library contains the architectural blueprint, subsystem boundaries, and design decisions. Implementing without this context leads to:
-- Violating planned module boundaries
-- Creating circular dependencies
-- Duplicating logic
-- Breaking planned refactoring paths
+## Hidden Assumptions
+- Modularization plans are authoritative - follow prescribed boundaries unless explicitly revised
+- Test coverage targets are minimums - 80% core, 70% UI, not maximums
+- Incremental migration assumes backward compatibility via adapter pattern
+- Interface-first design assumes TypeScript interfaces enforced at compile time (not runtime)
+- Configuration layer assumes JSON format - no support for executable code in config
+- Message bus refactoring assumes synchronous sendResponse callback pattern preserved
+
+## Stability Concerns
+- **No Test Coverage**: Existing code has zero tests - refactoring without tests risks regressions
+- **Monolithic Files**: 1,446-line content.tsx requires careful extraction to avoid breaking dependencies
+- **Service Worker Constraints**: Background script can suspend mid-operation - no in-memory state persistence
+- **Type Safety Gaps**: TypeScript types only compile-time - runtime validation missing for messages, storage, config
+- **Circular Dependency Risk**: Current architecture has implicit cycles - ESLint enforcement critical
+- **Breaking Changes**: Interface changes break all recorded tests - must maintain bundle structure compatibility
+
+## Edge Cases
+- **Partial Migration**: If adapter layers not removed after migration, creates performance overhead
+- **Test Fixture Maintenance**: Large DOM fixtures for testing may become stale as site structures evolve
+- **Configuration Schema Evolution**: Adding new config options requires migration logic for existing projects
+- **Concurrent Refactoring**: Multiple developers extracting different modules - merge conflicts likely
+- **E2E Test Flakiness**: Playwright tests may fail intermittently due to timing issues or service worker suspension
+- **Bundle Structure Changes**: Any modification to Bundle interface breaks all existing recorded tests - requires migration
+
+## Developer-Must-Know Notes
+- ALWAYS read component breakdown + modularization plan BEFORE starting extraction
+- Write failing unit tests FIRST, then implement to pass tests (strict TDD)
+- Use 'return true' pattern in chrome.runtime.onMessage for async responses - forgetting causes silent failures
+- Dexie transactions auto-commit - no explicit .commit() required, failures auto-rollback
+- Content script injection timing critical - page-interceptor.tsx must load before shadow components
+- XPath strategy is highest priority fallback - changes to XPath generation break replay
+- React controlled inputs require property descriptor bypass - fragile to React version changes
+- Service worker global state (openedTabId, trackedTabs) lost on suspension - must persist to chrome.storage
+- Tailwind CSS purging may remove dynamically added classes - use safelist for class name templates
+- Message serialization uses Structured Clone - functions, DOM nodes, circular references cannot be passed
+- Bundle structure is immutable contract between recording and replay - changes break all recorded tests
+- File size limits: 400 lines max per file, 50 lines per function - extract to smaller modules if exceeded
+- Commit message format: <type>(<scope>): <subject> with body explaining why, refs to analysis docs
+- PR checklist: tests pass, types check, linting passes, coverage targets met, resource map updated
 
 ---
 

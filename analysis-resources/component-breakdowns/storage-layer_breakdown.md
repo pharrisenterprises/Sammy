@@ -1,10 +1,61 @@
-# STORAGE LAYER BREAKDOWN
+# storage-layer_breakdown.md
 
-## 1. Summary
+## Purpose
+Persistent data management layer using IndexedDB (Dexie.js wrapper) for projects, test runs, recorded steps, field mappings, and CSV data with message-based coordination through background script.
 
-The Storage Layer provides **persistent data management** for projects, test runs, recorded steps, field mappings, and CSV data. It uses IndexedDB (via Dexie.js wrapper) for structured storage with relational queries and Chrome extension storage for settings. This layer abstracts storage complexity from UI components, enabling offline operation and large dataset handling.
+## Inputs
+- Messages from extension pages via chrome.runtime.sendMessage with action types: add_project, update_project, get_all_projects, delete_project, get_project_by_id, update_project_steps, update_project_fields, update_project_csv, createTestRun, updateTestRun, getTestRunsByProject
+- Payload data: Project objects, TestRun objects, field arrays, CSV data arrays
 
-**Importance**: ⭐⭐⭐⭐ (High - all user data flows through this layer)
+## Outputs
+- Response messages: { success: boolean, data?: any, error?: string, id?: number }
+- Project schema: id, name, description, target_url, status, created_date, updated_date, recorded_steps[], parsed_fields[], csv_data[]
+- TestRun schema: id, project_id, status, start_time, end_time, total_steps, passed_steps, failed_steps, test_results[], logs
+
+## Internal Architecture
+- **Dexie Wrapper** (indexedDB.ts 71 lines): ProjectDB class extends Dexie with two tables (projects, testRuns), public methods (addProject, updateProject, getAllProjects, deleteProject, createTestRun, updateTestRun, getTestRunsByProject)
+- **Background Message Router** (background.ts lines 15-270): 15+ action handlers, each follows pattern: extract payload → call DB method → sendResponse → return true
+- **Schema Definition**: version(1).stores() with auto-increment IDs (++id) and indexed fields
+- **Transaction Model**: Dexie Promises for async operations, no explicit transaction grouping
+
+## Critical Dependencies
+- **Files**: src/common/services/indexedDB.ts, src/background/background.ts (message coordinator)
+- **Libraries**: dexie (4.0.11) IndexedDB wrapper with TypeScript support
+- **Browser APIs**: IndexedDB for storage, Structured Clone Algorithm for serialization, chrome.storage.local/sync (minimal usage)
+- **Subsystems**: All UI components (Dashboard, Recorder, Mapper, Runner) send storage requests to background
+
+## Hidden Assumptions
+- Message channel kept open with 'return true' - forgetting causes async responses to fail silently
+- No schema validation - TypeScript types are only compile-time, runtime accepts any data structure
+- Chrome message size limit (64MB) - large recorded_steps[] or csv_data[] arrays could exceed
+- No caching - repeated getAllProjects() calls re-query IndexedDB every time
+- Single database version (1) - no migration strategy defined for future schema changes
+- chrome.storage API present but unused - IndexedDB is sole persistence mechanism
+
+## Stability Concerns
+- **No Schema Validation**: Invalid data can be written (missing required fields), causes runtime errors later
+- **No Migration Strategy**: Upgrading from version 1 to 2 requires manual Dexie upgrade() implementation
+- **Message Channel Races**: Async responses may arrive out of order if multiple operations queued
+- **Large Object Serialization**: No pagination for arrays, entire project loaded into memory
+- **No Transactions**: Multiple operations not grouped atomically (e.g., create project + add first step)
+- **Error Handling**: DB errors only logged, no retry logic or user notification strategy
+
+## Edge Cases
+- **Missing recorded_steps**: loadProject() checks for undefined and initializes to empty array - defensive coding
+- **Out of Quota**: IndexedDB quota exceeded causes write failures - no quota monitoring or cleanup
+- **Concurrent Writes**: Two tabs updating same project - last write wins, no conflict resolution
+- **Orphaned TestRuns**: Deleting project doesn't cascade delete test runs - potential data leaks
+- **Invalid Status Transitions**: No validation on status field changes (draft → complete bypassing testing)
+
+## Developer-Must-Know Notes
+- Storage operations are async but handlers use sendResponse callback pattern - mixing Promise and callback styles
+- Background script is service worker (Manifest V3) - can be suspended, but IndexedDB persists
+- Dexie automatically creates indexes for fields listed in stores() definition
+- DB.projects.get(id) returns undefined if not found - must check before using
+- update() returns number of updated records (0 or 1) - use to detect not found scenarios
+- No soft delete - deleteProject() permanently removes data immediately
+- chrome.runtime.sendMessage requires 'return true' in listener for async responses - common bug source
+- Message payload serialization uses Structured Clone - functions and DOM nodes cannot be passed
 
 ## 2. Primary Responsibilities
 

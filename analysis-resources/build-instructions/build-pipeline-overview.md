@@ -1,19 +1,55 @@
-# BUILD PIPELINE OVERVIEW
+# build-pipeline-overview.md
 
-## PURPOSE
-This document describes how the Sammy browser automation extension is currently built, bundled, and packaged for distribution. It serves as a reference for understanding the build process and identifying optimization opportunities.
+## Purpose
+Documents how the Sammy browser automation extension is built, bundled, and packaged using Vite as the primary build system with separate configurations for UI and background service worker.
 
----
+## Inputs
+- Source files: src/ directory with TypeScript, React, CSS
+- Configuration files: vite.config.ts (UI), vite.config.bg.ts (background), tsconfig.json, tailwind.config.js
+- Static assets: public/ directory (manifest.json, icons, fonts, HTML templates)
+- Dependencies: package.json with 70+ npm packages
 
-## BUILD SYSTEM
+## Outputs
+- dist/ directory: bundled and minified JavaScript, CSS, HTML files with hashed filenames
+- Background bundle: background.js (ES module, self-contained service worker)
+- UI bundles: main-[hash].js (React app), vendor-[hash].js (third-party dependencies), styles-[hash].css
+- Static assets: manifest.json, icon/, fonts/ copied to dist/
+- Source maps: enabled in development, disabled in production
 
-### Primary Build Tool: Vite
-**Version**: 6.3.5
+## Internal Architecture
+- **Main Build** (vite.config.ts): Entry points (main.tsx, popup.html, pages.html, index.html), plugins (@vitejs/plugin-react-swc, vite-plugin-html, vite-plugin-static-copy), output (dist/ with ES modules, automatic code splitting)
+- **Background Build** (vite.config.bg.ts): Entry point (background/background.ts), output format (ES module for Manifest V3), lib mode with single file output
+- **TypeScript Compilation**: Two configs (tsconfig.json for src/, tsconfig.node.json for build scripts), target ES2020, strict mode enabled, type checking NOT enforced during build (SWC skips it)
+- **CSS Processing**: Tailwind CSS 3.4.17 via PostCSS, autoprefixer for vendor prefixes, purging in production (unused utilities removed)
+- **Asset Handling**: vite-plugin-static-copy for manifest/icons/fonts, dynamic imports hashed to assets/ directory
+- **Post-Build**: scripts/postbuild.js runs after main build (manifest modifications, version injection)
 
-Vite is used as the primary build system for both the UI components and the background service worker. The project uses two separate Vite configurations to handle different build targets:
+## Critical Dependencies
+- **Build Tools**: Vite 6.3.5, TypeScript 5.0.2, SWC compiler (@vitejs/plugin-react-swc)
+- **CSS**: Tailwind CSS 3.4.17, PostCSS, Autoprefixer
+- **Plugins**: vite-plugin-html (multi-page), vite-plugin-static-copy (assets), @crxjs/vite-plugin (extension support)
+- **Browser APIs**: Assumes Manifest V3 service worker support, ES modules in background context
 
-1. **Main Build** (`vite.config.ts`) - UI pages, popup, and frontend assets
-2. **Background Build** (`vite.config.bg.ts`) - Background service worker
+## Hidden Assumptions
+- Content scripts referenced in manifest.json but NOT built by Vite - assumes raw TypeScript works (BROKEN in production)
+- Type checking skipped during build (SWC fast compilation) - assumes VS Code catches type errors
+- No lazy loading implemented - entire codebase loaded upfront despite code splitting capability
+- Tailwind content paths include src/ and public/ - assumes no Tailwind classes outside these directories
+- PostCSS processes all CSS files - assumes no non-Tailwind CSS needs different processing
+- Post-build script runs synchronously - assumes operations complete before packaging
+
+## Stability Concerns
+- **Content Script Gap**: manifest.json references src/contentScript/content.tsx directly - production build fails (TypeScript not executable)
+- **No Type Checking**: Build succeeds even with type errors - runtime failures only discovered in testing
+- **Bundle Size**: No lazy loading, multiple UI libraries (Radix + Material-UI + Flowbite) inflates bundle
+- **Build Modes Confusion**: Two separate Vite configs require manual coordination - easy to forget background build
+- **No CI/CD**: No automated testing, linting, or type checking in build pipeline
+- **Source Maps**: Enabled in production (security risk) - exposes source code structure
+
+## Edge Cases
+- **Manifest V3 Requirements**: Background service worker must be ES module with \"type\": \"module\" in manifest - breaks if module format changed\n- **Web Accessible Resources**: Injected scripts (page-interceptor.tsx, replay.ts) must be in web_accessible_resources - forgotten resources cause runtime errors\n- **Cross-Origin Iframes**: Content script injection fails silently in cross-origin frames - no build-time detection\n- **Large Dependencies**: Entire XLSX library bundled even if only basic parsing used - no tree shaking for large deps\n- **CSS Purging**: Tailwind purge may remove classes added dynamically via JavaScript - requires safelist configuration\n- **HMR Limitations**: Hot module replacement works for UI but not background service worker - requires full reload
+
+## Developer-Must-Know Notes\n- Build requires TWO commands: npm run build (UI) AND npm run build:bg (background) - easy to forget one\n- Content scripts MUST be added to separate Vite config (currently missing) - create vite.config.content.ts with IIFE output\n- TypeScript compilation is FAKE during build (SWC strips types) - run tsc --noEmit separately for real type checking\n- Tailwind CSS purging uses content paths - any dynamic class names (template literals) need safelist entries\n- Source maps add ~40% to bundle size - disable in production by removing 'sourcemap: true' from vite.config.ts\n- Post-build script can modify manifest.json - use to inject version from package.json or environment-specific settings\n- Watch mode: npm run watch:build uses nodemon to rebuild on changes - for development iteration\n- Bundle analysis: Add --analyze flag to vite build for size breakdown (requires rollup-plugin-visualizer)"}
 
 ---
 

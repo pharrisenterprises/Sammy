@@ -1,10 +1,67 @@
-# CSV PROCESSING ENGINE BREAKDOWN
+# csv-processing_breakdown.md
 
-## 1. Summary
+## Purpose
+Data import, parsing, validation, and field mapping engine that transforms CSV/Excel files into structured data rows for data-driven test execution with fuzzy auto-mapping.
 
-The CSV Processing Engine handles **data import, parsing, validation, and field mapping** for data-driven test execution. It transforms CSV files into structured data rows, enables auto-mapping to recorded steps using fuzzy string matching, and manages the association between CSV columns and form fields.
+## Inputs
+- File uploads: CSV (.csv) and Excel (.xlsx) files from user
+- Recorded steps: array of step objects with labels for mapping targets
+- Project ID: associated automation project identifier
+- File requirements: CSV with headers in first row, Excel first sheet used
 
-**Importance**: ⭐⭐⭐ (Medium-High - enables data-driven automation)
+## Outputs
+- Parsed data: array of row objects with header keys (first 10 rows stored as preview)
+- Field mappings: { field_name: string, mapped: boolean, inputvarfields: string }[] associating CSV columns to step labels
+- Mapping statistics: count of mapped/unmapped fields, progress percentage
+- Storage: Persisted to IndexedDB via update_project_csv and update_project_fields actions
+
+## Internal Architecture
+- **Upload Handler** (FieldMapper.tsx lines 120-220): File.text() for CSV, FileReader.arrayBuffer() for Excel, Papa.parse() with header:true for CSV, XLSX.read() + sheet_to_json() for Excel
+- **Auto-Mapping Algorithm** (lines 220-300): Normalizes field names (lowercase, remove spaces/underscores), compares with step labels using stringSimilarity.compareTwoStrings(), threshold 0.3 (30% similarity), selects best match per field
+- **Manual Mapping UI** (FieldMappingTable.tsx): React Select dropdown per CSV field, maps to recorded step labels, tracks mapped status
+- **Validation**: Checks for empty files, missing headers, parse errors, requires at least one mapped field before save
+- **Similarity Algorithm**: Dice coefficient from string-similarity library, bigram-based comparison, returns 0-1 score
+
+## Critical Dependencies
+- **Files**: src/pages/FieldMapper.tsx (523 lines), src/components/Mapper/FieldMappingTable.tsx, src/components/Mapper/MappingSummary.tsx
+- **Libraries**: papaparse (5.5.3) for CSV, xlsx (0.18.5) for Excel, string-similarity (4.0.4) for fuzzy matching
+- **Browser APIs**: File API, FileReader for binary parsing
+- **Subsystems**: Storage Layer for persistence, Recording Engine for step labels, Test Runner consumes CSV data
+
+## Hidden Assumptions
+- First row always contains headers - no header detection or user prompt
+- Excel files use first sheet only - multi-sheet workbooks ignored
+- Similarity threshold 0.3 (30%) is universal - not configurable per project
+- Field names normalized by removing spaces/underscores - may break intentional distinctions
+- Auto-mapping uses greedy first-match - doesn't consider global optimization
+- Only first 10 rows stored as preview - rest of CSV discarded until test execution
+- CSV encoding assumed UTF-8 - no encoding detection or conversion
+
+## Stability Concerns
+- **Threshold Tuning**: 0.3 may be too low (false positives) or too high (misses matches) depending on naming conventions
+- **Large Files**: No streaming parser - entire CSV loaded into memory (potential browser crash on 100k+ rows)
+- **Excel Compatibility**: XLSX library may not handle all Excel features (macros, formulas, merged cells)
+- **Encoding Issues**: Non-UTF-8 files display garbled characters - no charset detection
+- **No Type Validation**: Doesn't check if CSV values match expected types (email format, phone numbers)
+- **Duplicate Mappings**: Multiple CSV columns can map to same step - no conflict detection
+
+## Edge Cases
+- **Empty CSV**: File with headers but no data rows - passes validation but fails during test execution
+- **Malformed CSV**: Unquoted commas, line breaks in fields - Papa.parse may fail or produce wrong columns
+- **Identical Field Names**: Two columns named "Email" - both map to same step, later overwrites earlier
+- **No Matches Found**: If all similarity scores < 0.3, no fields auto-mapped - user must map manually
+- **Special Characters**: Field names with quotes, commas, newlines may break mapping display
+- **Missing Step Labels**: If recorded steps have no labels, auto-mapping impossible
+
+## Developer-Must-Know Notes
+- CSV processing happens client-side in extension page - no server upload
+- Only preview (10 rows) persisted to IndexedDB - full CSV re-parsed during test execution
+- Auto-mapping is greedy - first best match wins, no global optimization to minimize total distance
+- stringSimilarity uses Dice coefficient (bigram overlap) - case insensitive after normalization
+- Field mappings stored as parsed_fields[] in project - separate from csv_data[] preview
+- Manual mapping overrides auto-mapping - no indication which fields were auto vs manually mapped
+- Save requires at least one mapped field - enforced in UI validation
+- Test Runner uses mappingLookup object to inject CSV values into step labels during execution
 
 ## 2. Primary Responsibilities
 
