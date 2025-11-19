@@ -30,7 +30,7 @@ It must be updated automatically every time any analysis prompt, breakdown promp
 
 - **analysis-resources/modularization-plans/**  
   Holds modular re-architecture plans for future rebuilding steps:
-  - **00_modularization-overview.md** — Master modularization blueprint: module definitions, boundaries, migration path, success metrics.
+  - **00_modularization-overview.md** — Master modularization blueprint: module definitions, boundaries, and rebuild strategy.
   - **recording-engine_mod-plan.md** — Recording Engine modularization plan (to be populated).
   - **replay-engine_mod-plan.md** — Replay Engine modularization plan (to be populated).
   - **locator-strategy_mod-plan.md** — Locator Strategy System modularization plan (to be populated).
