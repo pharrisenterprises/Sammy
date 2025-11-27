@@ -24,19 +24,59 @@ interface Step {
   bundle?: LocatorBundle;
 }
 
+/**
+ * Multi-strategy element locator bundle
+ * Generated during recording, used for 9-tier fallback during replay
+ * 
+ * @see locator-strategy_breakdown.md for full specification
+ */
 interface LocatorBundle {
+  /** HTML tag name (e.g., 'input', 'button', 'div') */
   tag: string;
+  
+  /** Element ID attribute (null if not present) */
   id: string | null;
+  
+  /** Element name attribute (null if not present) */
   name: string | null;
+  
+  /** Placeholder text for input elements (null if not present) */
   placeholder: string | null;
+  
+  /** ARIA label or labelledby value (null if not present) */
   aria: string | null;
+  
+  /** All data-* attributes as key-value pairs */
   dataAttrs: Record<string, string>;
+  
+  /** Visible text content (textContent or innerText) */
   text: string;
+  
+  /** CSS class string (element.className) */
   css: string;
+  
+  /** Absolute XPath to element (always present, 100% confidence baseline) */
   xpath: string;
+  
+  /** CSS class list as array (element.classList) */
   classes: string[];
+  
+  /** Page URL when element was recorded */
   pageUrl: string;
-  //framePath: number[] | null;
+  
+  /** Bounding box for coordinate-based fallback (tier 8) */
+  bounding: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+  
+  /** Iframe hierarchy indices (null if element in top frame) */
+  iframeChain: number[] | null;
+  
+  /** Shadow DOM host XPath chain (null if no shadow DOM) */
+  shadowHosts: string[] | null;
 }
 
 interface Log {
