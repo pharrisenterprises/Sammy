@@ -1,352 +1,188 @@
-# locator-strategy_breakdown.md
+# Locator Strategy - Component Breakdown
 
-## Purpose
-Element identification engine that generates multiple identifiers during recording (XPath, ID, name, CSS, aria) and uses fallback resolution during replay to handle DOM changes.
+## 1. Purpose
 
-## Inputs
-- **Generation Phase**: Target DOM element, parent document, iframe chain, shadow root context
-- **Resolution Phase**: Bundle object with recorded identifiers, timeout config (default 2000ms), target document/iframe
+The Locator Strategy subsystem is the element identification protocol embedded in both recording and replay engines, defining how elements are captured as multi-dimensional LocatorBundles during recording and resolved back to live DOM nodes during replay using confidence-scored fallback chains.
 
-## Outputs
-- **Generation**: Bundle object with id, name, className, dataAttrs, aria, placeholder, tag, visibleText, xpath, bounding rect, iframeChain, shadowHosts
-- **Resolution**: Found HTMLElement or null, confidence score (0-1) indicating match quality
+**Core Responsibilities:**
+- Define LocatorBundle interface as immutable contract between recording and replay
+- Generate 15+ element identifiers during recording (XPath, ID, name, CSS, aria, data-attrs, placeholder, text, bounding box, iframe chain, shadow hosts)
+- Resolve bundles to elements during replay via 9-tier fallback strategy with confidence scoring
+- Provide resilience against DOM structure changes, dynamic IDs, and framework re-renders
+- Support cross-frame and shadow DOM element identification
 
-## Internal Architecture
-- **Generation Functions**: getXPath() with sibling indexing (50 lines), recordElement() comprehensive bundle builder (50 lines)
-- **Resolution Function**: findElementFromBundle() with 9-tier fallback (150 lines): XPath → ID+attributes → name → aria → placeholder → fuzzy text → bounding box → data attributes → retry with 150ms delay
-- **Strategy Priority**: Hardcoded ordering from highest (XPath 100%) to lowest (fuzzy text 40% threshold, bounding box 200px proximity)
-- **Shadow DOM Handler**: resolveXPathInShadow() traverses shadow boundaries using __realShadowRoot from interceptor
-- **Helper Functions**: visible() checks computed style, textSimilarity() word-based fuzzy matching, getDocumentFromIframeChain() resolves iframe context
+## 2. Inputs
 
-## Critical Dependencies
-- **Files**: src/contentScript/content.tsx (embedded in lines 400-450, 1050-1200)
-- **Libraries**: get-xpath (3.3.0, currently unused), xpath (0.0.34) for evaluation, string-similarity (4.0.4) for fuzzy matching
-- **Browser APIs**: document.evaluate() for XPath, querySelector/All for CSS, getElementById/Name/TagName for direct lookups
-- **Subsystems**: Recording Engine triggers generation, Replay Engine triggers resolution, Iframe Coordinator provides document context
+**During Recording:**
+- **DOM Element:** Target element from event.target or event.currentTarget
+- **Page Context:** document.location.href, window.frameElement, shadowRoot.host chains
+- **Element Properties:** id, name, className, placeholder, aria-*, data-*, tagName, textContent, computedStyle
+- **Spatial Data:** getBoundingClientRect() for x, y, width, height
 
-## Hidden Assumptions
-- Strategy priority is hardcoded and universal - may not be optimal for all site types
-- Fuzzy text threshold of 0.4 (40% similarity) is fixed - no per-site tuning
-- Bounding box proximity of 200px is constant - assumes elements don't move significantly
-- XPath with sibling indexing assumes stable DOM order - fails if items reorder
-- Shadow DOM resolution assumes __realShadowRoot property exists - requires page-interceptor
-- Retry logic uses fixed 150ms delay - not adaptive to page load speed
+**During Replay:**
+- **LocatorBundle Object:** Serialized bundle from projects.recorded_steps
+- **Current Page State:** document with all iframes and shadow roots
+- **Timing Constraints:** Timeout (default 2s), retry interval (default 150ms)
 
-## Stability Concerns
-- **Strategy Ordering**: Current priority hardcoded, adding new strategies requires modifying 150-line function
-- **False Positives**: 40% fuzzy threshold may match wrong elements with similar text
-- **Performance**: Brute-force tag scanning (getElementsByTagName) is O(n) on DOM size
-- **Timeout Tuning**: Fixed 2000ms may be too short for slow pages or too long for fast failures
-- **Maintenance**: Monolithic findElementFromBundle makes testing individual strategies difficult
+## 3. Outputs
 
-## Edge Cases
-- **Dynamic IDs**: React-generated IDs (react-1234) fail ID strategy immediately, fall to XPath
-- **Stale XPath**: DOM restructuring invalidates XPath, requires fallback to fuzzy strategies
-- **Identical Elements**: Multiple elements with same text/attributes confuse fuzzy matcher
-- **Hidden Elements**: Element exists but invisible - visible() check filters out, may miss valid targets
-- **Iframe Context Loss**: If iframe chain invalid (iframe removed), all strategies fail
-- **Shadow DOM Closed**: Un-intercepted closed shadow roots block all resolution attempts
-
-## Developer-Must-Know Notes
-- Locator logic is embedded in Recording and Replay engines - not isolated as separate module
-- Bundle structure is the contract between recording and replay - changes break all existing tests
-- Strategy priority cannot be configured at runtime - requires code changes
-- No caching of found elements - repeated queries re-execute full strategy chain
-- No confidence scoring across strategies - first successful find wins immediately
-- XPath generation uses get-xpath library but custom implementation used instead
-- textSimilarity() uses word set comparison (Dice coefficient) - case insensitive, whitespace normalized
-- Bounding box strategy calculates Euclidean distance from saved coordinates - nearest element wins
-
-## 2. Primary Responsibilities
-
-1. **Multi-Strategy Generation**: Create diverse element identifiers during recording
-2. **Priority Resolution**: Try locators in order of reliability (ID → XPath → fuzzy match)
-3. **Confidence Scoring**: Rate how well a found element matches the bundle
-4. **Fallback Orchestration**: Move to next strategy when current fails
-5. **Performance Optimization**: Cache results, short-circuit on high-confidence matches
-6. **Shadow DOM Navigation**: Handle standard DOM + shadow root traversal
-7. **Iframe Context**: Resolve elements across frame boundaries
-
-## 3. Dependencies
-
-### Files
-- `src/contentScript/content.tsx` - Implementation embedded in recording/replay logic
-  - `getXPath()` - XPath generator (lines 400-450)
-  - `recordElement()` - Bundle builder (lines 1100-1150)
-  - `findElementFromBundle()` - Multi-strategy finder (lines 1050-1200)
-
-### External Libraries
-- `get-xpath` (3.3.0) - XPath generation (currently unused, should be integrated)
-- `xpath` (0.0.34) - XPath evaluation for document.evaluate()
-- `string-similarity` (4.0.4) - Fuzzy text matching
-
-### Browser APIs
-- `document.evaluate()` - XPath query execution
-- `querySelector()` / `querySelectorAll()` - CSS selector queries
-- `getElementById()`, `getElementsByName()`, `getElementsByTagName()` - Direct lookups
-
-## 4. Inputs / Outputs
-
-### Inputs (Generation Phase - Recording)
-- **Target Element**: DOM element being recorded
-- **DOM Context**: Parent document, iframe chain, shadow root
-
-### Outputs (Generation Phase)
-- **Bundle Object**: Comprehensive identifier package
+**During Recording:**
+- **LocatorBundle Object:**
   ```typescript
-  {
-    id?: string,              // element.id
-    name?: string,            // element.name
-    className?: string,       // element.className
-    dataAttrs: {},            // data-* attributes
-    aria?: string,            // aria-label, aria-labelledby
-    placeholder?: string,     // placeholder attribute
-    tag: string,              // tagName.toLowerCase()
-    visibleText?: string,     // innerText or value
-    xpath: string,            // generated XPath
-    bounding: {               // position + size
-      left, top, width, height
-    },
-    iframeChain: [],          // parent iframe path
-    shadowHosts?: [],         // shadow root chain
-    isClosedShadow?: boolean  // closed shadow flag
+  interface LocatorBundle {
+    tag: string;                       // Element tag name (e.g., "input", "button")
+    id: string | null;                 // Element ID attribute
+    name: string | null;               // name attribute
+    placeholder: string | null;        // placeholder attribute
+    aria: string | null;               // aria-label or aria-labelledby
+    dataAttrs: Record<string, string>; // All data-* attributes
+    text: string;                      // textContent or innerText
+    css: string;                       // className string
+    xpath: string;                     // Absolute XPath
+    classes: string[];                 // classList array
+    pageUrl: string;                   // document.location.href
+    bounding: { x, y, width, height }; // Bounding box coordinates
+    iframeChain: number[] | null;      // Array of iframe indices (null if top frame)
+    shadowHosts: string[] | null;      // Array of shadow host XPaths (null if no shadow DOM)
   }
   ```
 
-### Inputs (Resolution Phase - Replay)
-- **Bundle Object**: Recorded identifiers
-- **Timeout Config**: How long to retry finding (default 2000ms)
-- **Target Document**: Main doc or iframe doc
+**During Replay:**
+- **Element Reference:** Live HTMLElement | null
+- **Resolution Metadata:** { strategy: string, confidence: number, duration: number }
+- **Error Details:** { error: string, attemptedStrategies: string[] } on failure
 
-### Outputs (Resolution Phase)
-- **Found Element**: HTMLElement or null
-- **Confidence Score**: Number (0-1) indicating match quality
+## 4. Internal Architecture
 
-## 5. Interactions with Other Subsystems
+**Not a Separate Module:** Locator strategy logic is embedded in content.tsx (1,446 lines)
 
-### Dependencies (Consumes)
-- **Recording Engine** → Triggers bundle generation during event capture
-- **Replay Engine** → Triggers element resolution during step execution
-- **Iframe Coordinator** → Provides document context for resolution
+**Recording Functions (src/contentScript/content.tsx lines 450-650):**
+- `recordElement(target, event, value?)` - 120 lines: Orchestrates bundle creation
+- `getXPath(element)` - 50 lines: Generates absolute XPath with sibling indexing (`/html/body/div[2]/...`)
+- `getDataAttributes(element)` - 20 lines: Extracts all `data-*` attributes as object
+- `getBoundingInfo(element)` - 15 lines: Returns {x, y, width, height} from getBoundingClientRect
+- `getIframeChain(element)` - 40 lines: Walks window.frameElement ancestry returning indices
+- `getShadowHosts(element)` - 30 lines: Walks shadowRoot.host chain returning XPath array
 
-### Dependents (Provides To)
-- **Recording Engine** ← Supplies getXPath(), recordElement() functions
-- **Replay Engine** ← Supplies findElementFromBundle() function
-- **Test Runner** ← Indirectly (via replay success rates)
+**Replay Functions (src/contentScript/content.tsx lines 850-1050):**
+- `findElementFromBundle(bundle, timeout=2000)` - 150 lines: 9-tier fallback with retry loop
+- Strategy implementations embedded inline (no separate functions per strategy)
+- Confidence scoring hardcoded per strategy (100% XPath → 40% fuzzy text)
 
-### Communication Mechanisms
-- Function calls (synchronous, inline in content.tsx)
-- No messaging required (pure logic layer)
+**9-Tier Fallback Priority:**
+1. **XPath (100%):** `document.evaluate(bundle.xpath)` with shadow root support
+2. **ID + Attributes (90%):** `querySelector(`#${id}[name="${name}"]`)`
+3. **Name (80%):** `querySelector(`[name="${name}"]`)`
+4. **Aria (75%):** `querySelector(`[aria-label="${aria}"]`)`
+5. **Placeholder (70%):** `querySelector(`[placeholder="${placeholder}"]`)`
+6. **Data Attributes (65%):** `querySelector(`[data-testid="${dataAttrs.testid}"]`)`
+7. **Fuzzy Text (40%):** `stringSimilarity.compareTwoStrings(el.textContent, bundle.text) > 0.4`
+8. **Bounding Box (spatial):** Euclidean distance < 200px from recorded coordinates
+9. **Retry:** Re-execute strategies 1-8 every 150ms up to 2s timeout
 
-## 6. Internal Structure
+**Confidence Scoring Logic:**
+- Strategies ordered by perceived stability (XPath absolute > fuzzy text)
+- No machine learning or adaptive scoring
+- Thresholds chosen empirically (e.g., 0.4 for fuzzy text, 200px for bounding box)
+- First strategy to find element wins; no "best match" across multiple strategies
 
-### Generation Functions
+## 5. Critical Dependencies
 
-#### `getXPath(element)` (50 lines)
-**Purpose**: Generate unique XPath with sibling indexing
+- **XPath Library (xpath 0.0.34):** document.evaluate() for generation and resolution
+- **string-similarity 4.0.4:** Dice coefficient algorithm for fuzzy text matching
+- **DOM APIs:** querySelector, querySelectorAll, getBoundingClientRect, classList
+- **Shadow DOM APIs:** element.shadowRoot, shadowRoot.host, getRootNode()
+- **Iframe APIs:** window.parent, window.frameElement, iframe.contentWindow
+- **Chrome Extension Context:** Must run in content script with access to page DOM
 
-**Algorithm**:
-1. Start from target element
-2. For each ancestor up to `<body>`:
-   - Count preceding siblings with same tagName
-   - Build path segment: `tagName[index]` or `tagName` if first
-3. Exclude `<svg>` tags (can cause issues)
-4. Return full path: `/html/body/div[2]/form/input[3]`
+**Breaking Changes Risk:**
+- XPath spec changes (unlikely but catastrophic)
+- string-similarity API changes (e.g., algorithm switch from Dice to Levenshtein)
+- Shadow DOM v2 spec changes (closed shadowRoot access restrictions)
 
-**Edge Cases**:
-- Skip SVG elements in path
-- Handle documentElement (html tag)
-- Stop at body tag
+## 6. Hidden Assumptions
 
-#### `recordElement(element)` (50 lines)
-**Purpose**: Build comprehensive bundle with all identifiers
+- **XPath Always Most Reliable:** Assumes DOM structure stable between recording and replay (often false for SPAs)
+- **Single Match Sufficient:** First element matching strategy returned; no check for ambiguity (e.g., multiple buttons with same name)
+- **English Text Content:** Fuzzy text matching assumes Latin characters; may fail for CJK, Arabic, RTL scripts
+- **Fixed Thresholds Universal:** 0.4 fuzzy similarity, 200px bounding box distance chosen for generic sites; not tuned per-project
+- **Bounding Box Coordinates Stable:** Assumes page layout identical at replay (fails for responsive designs, different screen sizes)
+- **No Element Visibility Check:** Strategies find element in DOM but don't verify `display: block`, `opacity: 1`, etc.
+- **Iframe Indices Stable:** Assumes iframe order in DOM unchanged (fails if iframes dynamically added/removed)
+- **Shadow DOM Depth Limited:** Tested for 1-2 shadow root levels; deep nesting (3+) untested
 
-**Steps**:
-1. Resolve original element (handle Select2 wrappers)
-2. Check for role="radio" or role="checkbox" (use role element instead)
-3. Extract all attributes:
-   - Direct: id, name, className, tag
-   - Computed: aria-*, data-*, placeholder
-   - Dynamic: bounding rect, visible text
-4. Generate XPath
-5. Serialize iframe chain
-6. Build bundle object
+## 7. Stability Concerns
 
-**Special Handling**:
-- Select2: Find original `<select>` element
-- Radio/Checkbox: Use role container, not inner elements
-- Shadow DOM: Record shadow host chain
+- **Embedded in Monolith:** Locator logic mixed with recording/replay in 1,446-line file; cannot independently test or version
+- **No Strategy Extensibility:** Adding new strategies requires editing content.tsx; cannot plugin custom strategies
+- **Hardcoded Confidence Scores:** Changing thresholds requires code change and re-deployment; no runtime configuration
+- **XPath Brittleness:** Absolute XPath (`/html/body/div[2]/...`) breaks on any DOM structure change (most common failure mode)
+- **No Fallback Validation:** Strategies tried in sequence; if strategy 2 fails, no re-attempt after strategy 9 completes
+- **Memory Leaks in Retry Loop:** Polling loop may leak setTimeout handles if replay aborted mid-step
+- **No Performance Metrics:** No tracking of which strategies succeed most often (data-driven optimization impossible)
 
-### Resolution Functions
+## 8. Edge Cases
 
-#### `findElementFromBundle(bundle, opts)` (150 lines) ⚠️ COMPLEX
-**Purpose**: Multi-strategy element finding with fallback
+- **Multiple Elements Match:** If querySelector(`[name="email"]`) finds 5 inputs, returns first (may be wrong one)
+- **Dynamic IDs:** XPath `//*[@id="form-abc123"]` fails if ID includes timestamp/session token
+- **Shadow DOM Slots:** XPath may point to <slot> element, not slotted content
+- **Iframe Cross-Origin:** contentWindow.document blocked by CORS; iframeChain resolution fails silently
+- **Elements Outside Viewport:** Bounding box strategy may match element at (x: -500, y: -500) if coordinates recorded during scroll
+- **Hidden Elements:** Element found but `display: none`; click/input operations fail
+- **React Portals:** Element rendered outside parent tree; XPath traversal from parent fails
+- **SVG/Canvas Sub-Elements:** XPath points to <svg> element; coordinates don't identify <path> or canvas sub-region
+- **Text Content Changes:** Fuzzy match fails if button text "Submit" changed to "Save" (similarity < 0.4 threshold)
+- **Lazy-Loaded Elements:** Element not in DOM at 0ms; requires full 2s timeout before fallback strategies tried
 
-**Strategy Priority** (ordered):
+## 9. Developer-Must-Know Notes
 
-1. **XPath Resolution** (Highest Priority)
-   - Use `document.evaluate()` or `resolveXPathInShadow()`
-   - Confidence: 100% if found and visible
-   - Fast path: Return immediately if successful
+### Bundle Interface is Sacred
+- LocatorBundle is the only contract between recording and replay
+- Never remove fields (breaks old recordings)
+- Adding fields requires optional properties (`newField?: string`) to maintain backward compatibility
+- Bundle serialization must support JSON.stringify (no functions, DOM nodes, circular references)
 
-2. **ID + Attribute Cross-Check** (High Priority)
-   - Query by ID: `document.getElementById(bundle.id)`
-   - Verify additional attributes (name, className, aria, data-*)
-   - Score based on matches: +1 per match
-   - Threshold: Require score ≥ 2
-   - Add bounding box proximity bonus (+1 if within 5px)
+### XPath is Both Best and Worst Strategy
+- 100% confidence for static sites with stable DOM
+- 0% reliability for SPAs with dynamic rendering, React keys, conditional classes
+- Prefer data-testid or aria-label for framework-heavy sites
+- Consider switching to relative XPath (`//*[@id="root"]//button`) instead of absolute
 
-3. **Name Attribute** (Medium Priority)
-   - Query by name: `document.getElementsByName(bundle.name)`
-   - Return first visible match
-   - Confidence: 80%
+### Fuzzy Text Matching is Slow
+- Iterates through all elements of tag type (`document.querySelectorAll(bundle.tag)`)
+- For <button> tag on page with 200 buttons, 200 compareTwoStrings() calls
+- Each comparison ~5ms → 1s overhead for single button
+- Consider disabling fuzzy strategy for performance-critical replays
 
-4. **Aria Labels** (Medium Priority)
-   - Query: `[aria-labelledby="${bundle.aria}"]`
-   - Useful for accessibility-focused forms
-   - Confidence: 75%
+### Bounding Box Strategy is Last Resort
+- Assumes identical viewport size, scroll position, screen resolution at replay
+- Fails for responsive designs (mobile vs desktop)
+- Euclidean distance calculation: `Math.sqrt((x1 - x2)**2 + (y1 - y2)**2) < 200`
+- 200px threshold chosen arbitrarily; may need tuning per project
 
-5. **Placeholder** (Medium Priority)
-   - Query: `[placeholder="${bundle.placeholder}"]`
-   - Common for modern web apps
-   - Confidence: 70%
+### Confidence Scores are Heuristic, Not Statistical
+- Percentages (100%, 90%, 75%) represent developer intuition, not measured accuracy
+- No A/B testing or ML training to validate scores
+- Consider instrumenting replay failures to build data-driven confidence model
 
-6. **Fuzzy Text Match** (Low Priority)
-   - Get all elements with same tag: `document.getElementsByTagName(bundle.tag)`
-   - Filter visible elements
-   - Compare innerText/value with bundle.visibleText
-   - Use `textSimilarity()` (string-similarity library)
-   - Threshold: 0.4 (40% similarity)
-   - Sort by confidence, return best if > 0.5
+### Strategy Execution is Sequential, Not Parallel
+- Strategies tried in order 1 → 2 → 3 ... → 9
+- If XPath fails but ID succeeds, no re-validation that ID element is correct one
+- Parallel execution with "best match" voting not implemented (would improve accuracy but add complexity)
 
-7. **Bounding Box Proximity** (Fallback)
-   - Query all visible elements
-   - Calculate Euclidean distance from saved coordinates
-   - Return nearest if < 200px away
-   - Confidence: Variable (closer = higher)
+### No Built-In Strategy Customization
+- Cannot disable specific strategies per project (e.g., "never use fuzzy text")
+- Cannot re-order strategies per site (e.g., "try data-testid before XPath for SPAs")
+- Requires forking content.tsx to customize behavior
 
-8. **Data Attribute Scan** (Fallback)
-   - For each data-* attribute in bundle.dataAttrs:
-     - Query: `[data-key="value"]`
-     - Return first visible match
+### Iframe and Shadow DOM Support is Partial
+- iframeChain assumes same-origin iframes (cross-origin blocked by browser)
+- shadowHosts assumes open shadow roots (closed roots require polyfill)
+- Nested combinations (iframe inside shadow DOM inside iframe) untested
 
-9. **Retry with Delay** (Dynamic Content)
-   - If all strategies fail and time < timeout:
-     - Wait 150ms
-     - Retry all strategies recursively
-
-**Helper Functions**:
-- `visible(el)` - Checks display, visibility, opacity
-- `textSimilarity(a, b)` - Word-based fuzzy matching
-- `getDocumentFromIframeChain(chain)` - Resolve iframe context
-
-### Shadow DOM Handling
-
-#### `resolveXPathInShadow(hostOrRoot, path)` (60 lines)
-**Purpose**: Traverse XPath through shadow DOM boundaries
-
-**Algorithm**:
-1. Start at shadow root or host element
-2. If host has `__realShadowRoot`, use it (from interceptor)
-3. Split XPath into segments: `div[2]/input[1]`
-4. For each segment:
-   - Parse tag and index
-   - Find nth element in current context
-   - If element has shadowRoot, descend into it
-5. Special case: Check for contenteditable divs in result
-6. Return final element or null
-
-**Limitations**:
-- Only works for open shadow roots or intercepted closed roots
-- Cannot traverse un-intercepted closed shadow roots
-
-## 7. Complexity Assessment
-
-**Complexity Rating**: 🟡 **MEDIUM-HIGH** (7/10)
-
-### Why Complexity Exists
-
-1. **Multiple Fallbacks**: 9 different strategies create branching logic
-2. **Scoring Ambiguity**: No clear formula for combining confidence scores
-3. **Performance Trade-offs**: Fast strategies (ID) vs. reliable (fuzzy text)
-4. **Shadow DOM**: Non-standard traversal requires custom logic
-5. **Iframe Coordination**: Cross-frame element resolution adds layers
-6. **Dynamic Content**: Retry logic introduces timing complexity
-7. **Framework Variations**: Different apps use different identifier patterns
-
-### Risks
-
-1. **Strategy Ordering**: Current priority is hardcoded, may not be optimal for all sites
-2. **False Positives**: Fuzzy matching (40% threshold) may find wrong elements
-3. **Performance**: Brute-force tag scanning (strategy 6) is O(n) on DOM size
-4. **Maintenance**: Adding new strategies requires modifying 150-line function
-5. **Testing**: Difficult to test all strategy combinations and edge cases
-6. **Timeout Tuning**: Fixed 2000ms may be too short/long for different scenarios
-
-### Refactoring Implications
-
-**Immediate Needs** (Phase 1):
-
-1. **Extract Strategy Pattern**:
-   ```typescript
-   interface ILocatorStrategy {
-     name: string;
-     priority: number;
-     find(bundle: Bundle, doc: Document): Element | null;
-     confidence(element: Element, bundle: Bundle): number;
-   }
-   ```
-
-2. **Create Strategy Implementations**:
-   - `XPathStrategy` (priority 10)
-   - `IDStrategy` (priority 9)
-   - `NameStrategy` (priority 7)
-   - `AriaStrategy` (priority 6)
-   - `PlaceholderStrategy` (priority 5)
-   - `FuzzyTextStrategy` (priority 3)
-   - `BoundingBoxStrategy` (priority 2)
-   - `DataAttributeStrategy` (priority 4)
-
-3. **Build Strategy Coordinator**:
-   ```typescript
-   class LocatorResolver {
-     constructor(strategies: ILocatorStrategy[]);
-     find(bundle: Bundle, opts: FindOptions): ElementResult;
-     addStrategy(strategy: ILocatorStrategy): void;
-     removeStrategy(name: string): void;
-     setStrategyPriority(name: string, priority: number): void;
-   }
-   ```
-
-**Long-Term Vision** (Phase 2):
-
-4. **Add Adaptive Learning**:
-   - Track which strategies succeed most often per site
-   - Adjust priority dynamically based on success history
-   - Store strategy preferences in chrome.storage
-
-5. **Implement Caching**:
-   - Cache found elements by bundle.xpath
-   - Invalidate on page navigation or DOM mutation
-   - Reduce repeated queries
-
-6. **Configuration Layer**:
-   - Allow users to enable/disable strategies
-   - Tune thresholds (fuzzy match = 0.4, bounding box = 200px)
-   - Set global timeout and retry intervals
-
-7. **Add Telemetry**:
-   - Log which strategy found each element
-   - Track average resolution time per strategy
-   - Identify problematic sites or elements
-
-**Complexity Reduction Target**: Medium (5/10) after refactoring
-
-### Key Improvements from Refactoring
-
-- **Testability**: Each strategy can be unit tested independently
-- **Extensibility**: Add new strategies without modifying core logic
-- **Maintainability**: Clear separation of concerns, easier debugging
-- **Performance**: Optimize slow strategies (e.g., cache tag scans)
-- **Flexibility**: Users can customize strategy behavior
-- **Observability**: Track strategy effectiveness for continuous improvement
+### Locator Strategy Should Be Separate Module
+- Current embedding in content.tsx makes testing impossible
+- Recommend extracting to `src/common/locator-strategy.ts` with:
+  - `interface IStrategy { name: string; confidence: number; resolve(bundle: Bundle): HTMLElement | null }`
+  - `class LocatorResolver { constructor(strategies: IStrategy[]); resolve(bundle): Promise<Element> }`
+  - Enables unit tests, strategy plugins, runtime configuration

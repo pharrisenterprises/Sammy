@@ -1,443 +1,256 @@
-# message-bus_breakdown.md
+# Message Bus - Component Breakdown
 
-## Purpose
-Communication infrastructure connecting all extension contexts (background, content scripts, popup, pages) using chrome.runtime, chrome.tabs, and window.postMessage APIs.
+## 1. Purpose
 
-## Inputs
-- **Background Messages**: { action: string, payload?: any } from extension pages (15+ action types)
-- **Content Script Messages**: { type: string, data: any } from background (runStep, pageLoaded)
-- **Cross-Context Messages**: { type: string, ...fields } via window.postMessage (logEvent, AUTOCOMPLETE_INPUT/SELECTION, REPLAY_AUTOCOMPLETE)
+The Message Bus is the Chrome Extension messaging infrastructure coordinating communication between background service worker, content scripts, UI pages (Dashboard/Recorder/TestRunner), and page context (interceptors), using chrome.runtime, chrome.tabs, and window.postMessage APIs.
 
-## Outputs
-- Response format: { success: boolean, data?: any, error?: string, id?: number }
-- Event broadcasts: one-way messages (logEvent) from content script to extension pages
-- Command acknowledgements: async responses with operation results
+**Core Responsibilities:**
+- Route 20+ action types between extension components via chrome.runtime.sendMessage/onMessage
+- Coordinate IndexedDB access through background script to avoid multi-context race conditions
+- Forward replay commands from TestRunner UI to content script in target tab
+- Relay recorded steps from content script to Recorder UI page in real-time
+- Bridge page context (interceptors) and content script via window.postMessage for shadow DOM events
+- Maintain async response channels with "return true" pattern for sendResponse
 
-## Internal Architecture
-- **Background Router** (background.ts lines 15-270): chrome.runtime.onMessage listener with 20+ action handlers following pattern: extract payload → async operation → sendResponse → return true
-- **Content Script Listener** (content.tsx lines 800-850): Handles runStep messages, executes playAction(), returns success/failure via sendResponse
-- **Page Context Bridge** (page-interceptor.tsx + content.tsx): window.postMessage for shadow DOM events, window.addEventListener for message reception
-- **Action Types**: Storage ops (add/update/get/delete_project, test runs), tab management (openTab, close_opened_tab), recording events (logEvent)
+## 2. Inputs
 
-## Critical Dependencies
-- **Files**: src/background/background.ts, src/contentScript/content.tsx, src/contentScript/page-interceptor.tsx, all UI pages
-- **Browser APIs**: chrome.runtime.sendMessage/onMessage, chrome.tabs.sendMessage, window.postMessage/addEventListener
-- **Subsystems**: Connects UI ↔ Background ↔ Content Scripts ↔ Page Context, enables Recording Engine → Recorder UI, Test Runner → Replay Engine
+- **UI Page Messages:** Dashboard, Recorder, TestRunner pages send chrome.runtime.sendMessage({ action, payload })
+- **Content Script Messages:** Recording/replay logic sends chrome.runtime.sendMessage({ action, data })
+- **Background Commands:** chrome.tabs.sendMessage({ action, payload }, { tabId }) from background to content scripts
+- **Page Context Events:** window.postMessage({ type, data }, '*') from page-interceptor.tsx for shadow DOM exposure
+- **Storage Operations:** IndexedDB CRUD requests routed through background
 
-## Hidden Assumptions
-- Message channel requires 'return true' in listener for async operations - forgetting causes silent failures
-- Action names are magic strings - typos cause message routing failures ("get_all_project" vs "get_all_projects")
-- Chrome message size limit (64MB) - large payloads (CSV data) could fail serialization
-- No timeout handling - messages can hang indefinitely if handler never responds
-- No request tracking - cannot correlate request/response pairs for debugging
-- window.postMessage trusts origin="*" - no security validation of message source
+## 3. Outputs
 
-## Stability Concerns
-- **Missing Return True**: Forgetting 'return true' in async handlers causes responses to fail silently
-- **Type Inconsistency**: Different message formats ("action" vs "type" field) across contexts creates confusion
-- **No Message Registry**: Action names not centrally defined - easy to introduce typos
-- **Context Confusion**: Hard to trace which context originated a message in distributed flow
-- **Weak Type Safety**: TypeScript doesn't enforce message contracts at runtime
-- **Race Conditions**: Messages can arrive out of order or be dropped without notification
+- **Response Objects:** { success: true, data } or { success: false, error } via sendResponse callback
+- **Broadcast Events:** Real-time step recording updates, replay progress, log messages
+- **Tab-Specific Messages:** chrome.tabs.sendMessage to specific content script instances
+- **Error Notifications:** chrome.runtime.lastError checked after message failures
 
-## Edge Cases
-- **Service Worker Suspension**: Background script (Manifest V3) can terminate mid-message - messages lost
-- **Tab Closure**: chrome.tabs.sendMessage fails if target tab closed - no graceful degradation
-- **Cross-Origin Iframes**: Cannot sendMessage to cross-origin content scripts - silently fails
-- **Multiple Listeners**: If multiple handlers registered for same action, only first response used
-- **Serialization Failures**: Complex objects with functions/DOM nodes cannot be passed via messages
-- **Concurrent Requests**: No queuing mechanism - rapid-fire messages may overwhelm handlers
+## 4. Internal Architecture
 
-## Developer-Must-Know Notes
-- Background router has 20+ action handlers - adding new actions requires modifying monolithic listener
-- Message format differs by context: "action" in background messages, "type" in content/page messages
-- chrome.runtime.sendMessage is async but uses callback pattern, not Promises (legacy API)
-- window.postMessage requires checking event.source === window to prevent external message injection
-- sendResponse must be called synchronously OR listener must return true - mixed semantics
-- Content script logEvent() broadcasts to all extension pages - no targeted messaging
-- Replay commands use chrome.tabs.sendMessage requiring specific tabId - stored in background global state
-- Page-context scripts cannot access chrome APIs - must relay through content script via window.postMessage
+**Primary Files:**
+- `src/background/background.ts` (lines 15-270) - Message router with 20+ action handlers
+- `src/contentScript/content.tsx` (lines 750-850) - Content script message listeners
+- `src/contentScript/page-interceptor.tsx` (lines 50-100) - Page context postMessage bridge
 
-## 2. Primary Responsibilities
+**Message Flow Patterns:**
 
-1. **Message Routing**: Direct messages to appropriate handlers based on action/type
-2. **Context Bridging**: Connect background ↔ extension pages ↔ content scripts ↔ page context
-3. **Request/Response Pairing**: Match async responses to original requests
-4. **Error Propagation**: Surface errors from any context back to callers
-5. **Type Safety**: Ensure message contracts are respected (currently weak)
-6. **Channel Management**: Keep message channels open for async responses
-7. **Event Broadcasting**: Notify multiple listeners of system events
-
-## 3. Dependencies
-
-### Files
-- `src/background/background.ts` (347 lines) - Main message router
-- `src/contentScript/content.tsx` (1,446 lines) - Content script message handling
-- `src/contentScript/page-interceptor.tsx` (107 lines) - Page context messaging
-- All UI pages (Dashboard, Recorder, Mapper, Runner) - Message senders
-
-### Browser APIs
-- `chrome.runtime.sendMessage()` - Extension page → Background
-- `chrome.runtime.onMessage` - Listen for messages in any context
-- `chrome.tabs.sendMessage()` - Background → Content script (specific tab)
-- `window.postMessage()` - Content script ↔ Page context
-- `window.addEventListener("message")` - Listen to postMessage
-
-## 4. Inputs / Outputs
-
-### Message Format Standards
-
-#### Background Messages (Extension → Background)
+**Pattern 1: UI → Background → IndexedDB**
 ```typescript
-{
-  action: string,  // Operation identifier
-  payload?: any    // Operation data
-}
-```
+// Dashboard.tsx
+chrome.runtime.sendMessage({ action: "get_all_projects" }, (response) => {
+  if (response.success) setProjects(response.projects);
+});
 
-**Actions**:
-- Storage: `add_project`, `update_project`, `get_all_projects`, `delete_project`, `get_project_by_id`, `update_project_steps`, `update_project_fields`, `update_project_csv`
-- Test Runs: `createTestRun`, `updateTestRun`, `getTestRunsByProject`
-- Tab Management: `openTab`, `close_opened_tab`, `openDashBoard`, `open_project_url_and_inject`
-
-#### Content Script Messages (Extension → Content Script)
-```typescript
-{
-  type: string,   // Message type
-  data: any       // Message payload
-}
-```
-
-**Types**:
-- `runStep` - Execute recorded step in page
-- `pageLoaded` - Page finished loading
-
-#### Cross-Context Messages (Content ↔ Page)
-```typescript
-{
-  type: string,   // Event type
-  [key: string]: any  // Event-specific data
-}
-```
-
-**Types**:
-- `logEvent` - Step recorded (Content → Extension Pages)
-- `AUTOCOMPLETE_INPUT` - User typed in autocomplete (Page → Content)
-- `AUTOCOMPLETE_SELECTION` - User selected option (Page → Content)
-- `REPLAY_AUTOCOMPLETE` - Replay autocomplete action (Content → Page)
-
-### Response Format
-```typescript
-{
-  success: boolean,
-  data?: any,
-  error?: string,
-  id?: number
-}
-```
-
-## 5. Interactions with Other Subsystems
-
-### Routes Messages Between
-- **UI Components** ↔ **Background Service** (storage operations, tab management)
-- **Background Service** ↔ **Content Scripts** (inject scripts, replay commands)
-- **Content Scripts** ↔ **Page Context** (shadow DOM events, autocomplete)
-- **Recording Engine** → **Recorder UI** (captured events)
-- **Test Runner** → **Replay Engine** (execution commands)
-
-### Communication Patterns
-
-#### 1. Request/Response (Async)
-```
-Dashboard → Background (get_all_projects)
-Background → IndexedDB query
-Background ← Projects data
-Background → Dashboard (response)
-```
-
-#### 2. Command/Acknowledgement
-```
-Test Runner → Background (openTab)
-Background → chrome.tabs.create()
-Background → Content Script (inject main.js)
-Background → Test Runner (success + tabId)
-```
-
-#### 3. Event Broadcasting (One-Way)
-```
-User clicks element
-Recording Engine captures event
-Content Script → Extension Pages (logEvent)
-Recorder UI updates step list
-```
-
-## 6. Internal Structure
-
-### Background Message Router (`background.ts` lines 15-270)
-
-#### Handler Pattern
-```typescript
+// background.ts
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!message.action) return false;
-  
-  try {
-    if (message.action === "ACTION_NAME") {
-      // Handle action
-      someAsyncOperation()
-        .then(result => sendResponse({ success: true, ...result }))
-        .catch(error => sendResponse({ success: false, error: error.message }));
-      return true;  // ⚠️ CRITICAL: Keep channel open
-    }
-  } catch (err) {
-    sendResponse({ success: false, error: err.message });
-    return false;
+  if (message.action === "get_all_projects") {
+    DB.getAllProjects()
+      .then(projects => sendResponse({ success: true, projects }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true; // Keep async channel open
   }
 });
 ```
 
-**Actions Handled** (20+ handlers):
-1. `add_project` - Create new project
-2. `update_project` - Update project metadata
-3. `get_all_projects` - List all projects
-4. `delete_project` - Delete project
-5. `get_project_by_id` - Fetch single project
-6. `open_project_url_and_inject` - Open tab + inject scripts
-7. `update_project_steps` - Save recorded steps
-8. `update_project_fields` - Save field mappings
-9. `update_project_csv` - Save CSV data
-10. `createTestRun` - Insert test run record
-11. `updateTestRun` - Update test run status
-12. `getTestRunsByProject` - Query test history
-13. `openTab` - Open new tab + inject
-14. `close_opened_tab` - Close tracked tab
-15. `openDashBoard` - Open extension dashboard
-
-### Content Script Message Listener (`content.tsx` lines 800-850)
-
-#### Replay Message Handler
+**Pattern 2: UI → Background → Content Script**
 ```typescript
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type !== 'runStep') return false;
-  
-  try {
-    const { event, bundle, value, label } = message.data;
-    updateNotification({ label, value, status: "loading" });
-    
-    // Execute step
-    const success = await playAction(bundle, action);
-    
-    updateNotification({ label, value, status: success ? "success" : "error" });
-    sendResponse(success);
-    return true;
-  } catch (error) {
-    updateNotification({ label: "Error", value: String(error), status: "error" });
-    sendResponse(false);
-    return true;
-  }
-});
-```
-
-#### Recording Event Broadcast
-```typescript
-const logEvent = (data) => {
-  chrome.runtime.sendMessage({ type: "logEvent", data });
-};
-```
-
-### Cross-Context Messaging (`content.tsx` + `page-interceptor.tsx`)
-
-#### Page → Content (Autocomplete Events)
-```typescript
-// In page-interceptor.tsx
-window.postMessage({
-  type: "AUTOCOMPLETE_INPUT",
-  value: input.value,
-  xpath: getXPath(input),
-  label: input.name
-}, "*");
-
-// In content.tsx
-window.addEventListener("message", (event) => {
-  if (event.source !== window) return;
-  if (event.data.type === "AUTOCOMPLETE_INPUT") {
-    logEvent({ eventType: 'input', ... });
-  }
-});
-```
-
-#### Content → Page (Replay Commands)
-```typescript
-// In content.tsx
-window.postMessage({
-  type: "REPLAY_AUTOCOMPLETE",
-  actions: [{ type: "AUTOCOMPLETE_SELECTION", xpath, text }]
-}, "*");
-
-// In replay.ts
-window.addEventListener("message", (e) => {
-  if (e.data?.type === "REPLAY_AUTOCOMPLETE") {
-    replayAutocompleteActions(e.data.actions);
-  }
-});
-```
-
-### UI Component Message Senders
-
-#### Dashboard Example
-```typescript
-chrome.runtime.sendMessage(
-  { action: "get_all_projects" },
-  (response) => {
-    if (response?.success) {
-      setProjects(response.projects);
-    }
-  }
-);
-```
-
-#### Test Runner Example
-```typescript
-const response = await chrome.runtime.sendMessage({
-  action: "openTab",
-  url: target_url
+// TestRunner.tsx
+chrome.runtime.sendMessage({ action: "start_replay", projectId, csvRow }, (response) => {
+  if (response.success) setIsRunning(true);
 });
 
-if (response.success) {
-  const tabId = response.tabId;
-  await chrome.tabs.sendMessage(tabId, {
-    type: "runStep",
-    data: stepData
+// background.ts
+if (message.action === "start_replay") {
+  chrome.tabs.query({ active: true }, (tabs) => {
+    chrome.tabs.sendMessage(tabs[0].id, { action: "execute_replay", steps, csvRow }, (response) => {
+      sendResponse(response);
+    });
   });
+  return true;
 }
+
+// content.tsx
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === "execute_replay") {
+    executeReplay(message.steps, message.csvRow)
+      .then(result => sendResponse({ success: true, result }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+});
 ```
 
-## 7. Complexity Assessment
+**Pattern 3: Content Script → UI (Real-Time Broadcast)**
+```typescript
+// content.tsx (during recording)
+chrome.runtime.sendMessage({
+  type: "logEvent",
+  data: { eventType: "click", xpath: "...", label: "Submit", bundle: {...} }
+});
 
-**Complexity Rating**: 🟡 **MEDIUM** (6/10)
+// Recorder.tsx
+chrome.runtime.onMessage.addListener((message) => {
+  if (message.type === "logEvent") {
+    setRecordedSteps(prev => [...prev, message.data]);
+  }
+});
+```
 
-### Why Complexity Exists
+**Pattern 4: Page Context → Content Script (Shadow DOM Bridge)**
+```typescript
+// page-interceptor.tsx (injected into page)
+window.postMessage({
+  type: "SHADOW_ROOT_EXPOSED",
+  shadowRoot: element.__realShadowRoot,
+  targetXPath: getXPath(element)
+}, '*');
 
-1. **Multiple Contexts**: 4 different execution contexts (background, content, page, extension pages)
-2. **Async Challenges**: Promises, callbacks, sendResponse timing issues
-3. **Type Inconsistency**: Different message formats (`action` vs `type` field)
-4. **Channel Management**: Must return `true` to keep async channels open
-5. **Error Handling**: Errors can occur in any context, must propagate correctly
-6. **Race Conditions**: Messages can arrive out of order or be dropped
-7. **No Message Registry**: Action names are magic strings, easy to typo
+// content.tsx
+window.addEventListener('message', (event) => {
+  if (event.source !== window) return;
+  if (event.data.type === "SHADOW_ROOT_EXPOSED") {
+    exposedShadowRoots.set(event.data.targetXPath, event.data.shadowRoot);
+  }
+});
+```
 
-### Risks
+**20+ Action Types:**
+- `add_project`, `update_project`, `delete_project`, `get_all_projects`, `get_project_by_id`
+- `update_project_steps` (save recording progress)
+- `getTestRunsByProject`, `add_test_run`, `update_test_run`
+- `start_recording`, `stop_recording`, `start_replay`, `stop_replay`
+- `execute_replay`, `step_result` (replay progress updates)
+- `open_project_url_and_inject` (open tab + inject content script)
+- `logEvent` (real-time recording broadcast)
+- `SHADOW_ROOT_EXPOSED`, `AUTOCOMPLETE_INPUT` (page context events)
 
-1. **Missing Return True**: Forgetting `return true` causes async responses to fail silently
-2. **Message Name Typos**: `"get_all_project"` vs `"get_all_projects"` (easy to miss)
-3. **Serialization Limits**: Chrome message size limit (64MB), can't send huge objects
-4. **Context Confusion**: Hard to trace which context a message originates from
-5. **No Timeout Handling**: Messages can hang indefinitely if handler fails
-6. **No Request Tracking**: Can't correlate request/response pairs for debugging
-7. **Weak Type Safety**: TypeScript doesn't enforce message contracts
+**Critical Pattern: Return True for Async**
+```typescript
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === "async_operation") {
+    someAsyncFunction()
+      .then(result => sendResponse({ success: true, result }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true; // CRITICAL: Keeps sendResponse channel open
+  }
+});
+```
 
-### Refactoring Implications
+## 5. Critical Dependencies
 
-**Immediate Needs** (Phase 1):
+- **chrome.runtime API:** sendMessage (extension page → background), onMessage (receive messages)
+- **chrome.tabs API:** sendMessage (background → specific tab), query (find active tab)
+- **window.postMessage:** Cross-context communication (page ↔ content script)
+- **chrome.storage.local:** Persist recording state across page reloads (projectId, isRecording)
+- **Background Service Worker:** Must stay alive to route messages; chrome.alarms for keepalive
+- **Promise Handling:** All async operations wrapped in .then/.catch with sendResponse in both paths
 
-1. **Create Typed Message Contracts**:
-   ```typescript
-   // Message definitions
-   interface AddProjectMessage {
-     action: 'add_project';
-     payload: Omit<Project, 'id'>;
-   }
-   
-   interface AddProjectResponse {
-     success: boolean;
-     id?: number;
-     error?: string;
-   }
-   
-   type BackgroundMessage = 
-     | AddProjectMessage
-     | UpdateProjectMessage
-     | GetAllProjectsMessage
-     | ...;
-   ```
+**Breaking Changes Risk:**
+- Manifest V3 service worker lifecycle (background may terminate after 30s)
+- chrome.runtime.sendMessage ~64MB size limit (large CSV/step arrays may exceed)
+- window.postMessage unreliable in cross-origin iframes (blocked by CSP)
 
-2. **Build Message Bus Abstraction**:
-   ```typescript
-   class MessageBus {
-     // Send message with type safety
-     send<T extends Message>(message: T): Promise<ResponseFor<T>> {
-       return new Promise((resolve, reject) => {
-         chrome.runtime.sendMessage(message, (response) => {
-           if (response.success) resolve(response);
-           else reject(new Error(response.error));
-         });
-       });
-     }
-     
-     // Register typed handler
-     on<T extends Message>(
-       action: T['action'],
-       handler: (message: T) => Promise<ResponseFor<T>>
-     ): void {
-       // Register with chrome.runtime.onMessage
-     }
-   }
-   ```
+## 6. Hidden Assumptions
 
-3. **Add Request Tracking**:
-   ```typescript
-   class RequestTracker {
-     private pending = new Map<string, PendingRequest>();
-     
-     track(requestId: string, timeout: number): Promise<Response> {
-       // Create promise that resolves when response arrives
-       // Reject if timeout expires
-     }
-     
-     resolve(requestId: string, response: Response): void {
-       // Match response to request
-     }
-   }
-   ```
+- **Background Script Always Alive:** No retry logic if chrome.runtime.sendMessage fails due to background termination
+- **Message Order Preserved:** Assumes messages from content script processed in sequence (not guaranteed by spec)
+- **Single Tab Recording:** Recording state (isRecording) stored globally; concurrent multi-tab recording not supported
+- **Synchronous Message Handling:** Assumes handlers complete <5s; longer operations may timeout
+- **No Message Queue:** If background busy, incoming messages may be dropped (no queue or backpressure)
+- **window.postMessage Unrestricted:** Uses `targetOrigin: '*'` assuming same-origin content script (security risk if page compromised)
+- **Sender Tab Always Available:** Assumes sender.tab.id exists for content script messages (fails for popup/options pages)
 
-**Long-Term Vision** (Phase 2):
+## 7. Stability Concerns
 
-4. **Unified Message Format**:
-   - Standardize on single format across all contexts
-   - Use `type` field everywhere (not `action` vs `type`)
-   - Add metadata: `requestId`, `timestamp`, `sender`
+- **No Error Recovery:** If sendResponse fails (background dead), UI callback never fires with no error indication
+- **Service Worker Termination:** Manifest V3 background script stops after 30s inactivity; mid-operation termination orphans messages
+- **Message Size Limit:** Sending 10,000-step array (2MB JSON) via chrome.runtime.sendMessage may hit 64MB limit
+- **Race Conditions:** Multiple tabs sending update_project simultaneously may cause last-write-wins data loss
+- **No Acknowledgement Protocol:** Fire-and-forget logEvent messages not confirmed; if Recorder UI closed, events lost
+- **Tight Coupling:** 20+ action types hardcoded in background.ts; adding actions requires editing central router
+- **No Message Versioning:** Changing payload structure breaks compatibility between extension versions
 
-5. **Message Middleware**:
-   ```typescript
-   interface MessageMiddleware {
-     before?(message: Message): Message | void;
-     after?(response: Response): Response | void;
-     error?(error: Error): Error | void;
-   }
-   
-   // Example middlewares:
-   // - LoggingMiddleware (trace all messages)
-   // - ValidationMiddleware (check message schemas)
-   // - RetryMiddleware (auto-retry on failure)
-   // - CachingMiddleware (cache responses)
-   ```
+## 8. Edge Cases
 
-6. **Add Message Queue**:
-   - Buffer messages if recipient not ready
-   - Retry failed messages with exponential backoff
-   - Dead letter queue for permanently failed messages
+- **Background Script Restart:** Pending sendResponse callbacks invalidated; UI waits forever for response
+- **Cross-Origin Iframes:** window.postMessage blocked by CSP; shadow DOM events from iframe not received
+- **Large Payloads:** Sending 100MB CSV via chrome.runtime.sendMessage throws DataCloneError
+- **Concurrent Recording:** Tab A and Tab B both recording; logEvent messages interleaved, corrupting recorded_steps array
+- **Orphaned Messages:** Recorder UI closes mid-recording; logEvent messages from content script lost (no queue)
+- **Popup Message Timing:** Popup opens, sends chrome.runtime.sendMessage before background fully initialized; message lost
+- **Nested Message Handlers:** Handler A calls chrome.tabs.sendMessage, handler B in content script calls chrome.runtime.sendMessage back; creates message loop
+- **Chrome Extension Context Loss:** Page reload during replay terminates content script; in-flight messages lost
+- **window.postMessage Spoofing:** Malicious page can send fake SHADOW_ROOT_EXPOSED messages; no origin validation
+- **Tab ID Mismatch:** chrome.tabs.sendMessage to closed tab throws "Receiving end does not exist" error
 
-7. **Implement Telemetry**:
-   - Track message latency (request → response time)
-   - Monitor message failure rates
-   - Alert on abnormal patterns (spike in errors)
+## 9. Developer-Must-Know Notes
 
-**Complexity Reduction Target**: Low-Medium (4/10) after refactoring
+### Return True is Non-Negotiable
+- Forgetting `return true` in async onMessage handlers is #1 bug source
+- Symptom: sendResponse called but UI callback never receives response
+- Chrome silently closes message channel if handler doesn't return true immediately
+- Use ESLint rule to enforce: `chrome-extension/no-return-missing-listener`
 
-### Key Improvements from Refactoring
+### Message Size Limit is 64MB
+- chrome.runtime.sendMessage serializes payload via structuredClone (not JSON.stringify)
+- Limit applies to total message size after serialization
+- 10,000-step recording ≈ 2MB; 100,000 steps may exceed limit
+- Workaround: Paginate large arrays (send in chunks) or use IndexedDB with ID references
 
-- **Type Safety**: Compile-time checking prevents message contract violations
-- **Debuggability**: Request tracking enables message flow tracing
-- **Reliability**: Timeouts and retries prevent hanging requests
-- **Maintainability**: Central registry of messages (self-documenting)
-- **Testability**: Mock message bus for unit tests
-- **Observability**: Telemetry provides visibility into message patterns
+### Background Service Worker Lifecycle is Critical
+- Manifest V3 service workers terminate after 30s no activity
+- Use chrome.alarms.create('keepalive', { periodInMinutes: 1 }) to prevent termination
+- Long-running operations (e.g., 500-step replay) must keep worker alive
+
+### window.postMessage Requires Origin Validation
+- Current code uses `targetOrigin: '*'` (accepts messages from any origin)
+- Security risk: Malicious page can spoof SHADOW_ROOT_EXPOSED events
+- Fix: Use `targetOrigin: window.location.origin` and validate event.origin in listener
+
+### No Built-In Retry Logic
+- If chrome.runtime.sendMessage fails (background dead), message silently lost
+- UI must implement retry: `sendWithRetry(message, maxRetries=3, delay=1000)`
+- Check chrome.runtime.lastError after sendMessage:
+  ```typescript
+  chrome.runtime.sendMessage(message, (response) => {
+    if (chrome.runtime.lastError) {
+      console.error("Message failed:", chrome.runtime.lastError.message);
+      // Retry logic here
+    }
+  });
+  ```
+
+### Tab-Specific Messaging Requires Active Tab Query
+- chrome.tabs.sendMessage needs tab ID; must query first:
+  ```typescript
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (tabs[0]) {
+      chrome.tabs.sendMessage(tabs[0].id, message);
+    }
+  });
+  ```
+- Fails if no active tab (user switched windows)
+
+### Real-Time Broadcast Pattern Has No Delivery Guarantee
+- logEvent messages sent during recording; if Recorder UI not open, messages lost
+- Consider buffering messages in background script if no listeners detected
+- Use chrome.storage.local for critical state (e.g., isRecording flag)
+
+### Message Versioning Critical for Updates
+- Extension v1.0 sends { action: "add_project", name, url }
+- Extension v1.1 expects { action: "add_project", name, url, tags }
+- Background script must handle both formats:
+  ```typescript
+  const project = {
+    name: message.payload.name,
+    url: message.payload.url,
+    tags: message.payload.tags || [] // Backward compatible
+  };
+  ```
+
+### Testing Requires Chrome Extension Test Environment
+- Cannot mock chrome.runtime in jsdom/jest (missing structuredClone, MessagePort)
+- Use Puppeteer with chrome.debugger API for E2E tests
+- Or test-extension package with real Chrome instance

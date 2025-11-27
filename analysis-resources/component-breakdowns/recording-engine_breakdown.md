@@ -1,256 +1,181 @@
-# recording-engine_breakdown.md
+# Recording Engine - Component Breakdown
 
-## Purpose
-Core event capture system that monitors and records all user interactions (clicks, inputs, keyboard events) on web pages, transforming them into structured, replay-able steps with multiple locator strategies.
+## 1. Purpose
 
-## Inputs
-- User interactions: mouse clicks, keyboard input, form interactions, navigation events
-- DOM state: current page structure, iframe hierarchy, shadow DOM state
-- Configuration: recording enabled/disabled state from Recorder UI
+The Recording Engine is a monolithic user interaction capture system embedded in the content script that observes DOM events, generates multi-strategy element locators, detects contextual labels, and serializes user actions into immutable Bundle structures for reliable replay.
 
-## Outputs
-- Recorded steps: structured event objects with eventType, xpath, value, label, coordinates, and comprehensive element bundles
-- Log events: real-time capture notifications broadcast to Recorder UI via chrome.runtime.sendMessage
-- Element bundles: comprehensive metadata packages containing ID, name, className, data attributes, aria labels, XPath, bounding box, iframe chain
+**Core Responsibilities:**
+- Listen for click, input, change, submit events via addEventListener on shadowRoot-aware document
+- Generate XPath + 8 fallback locator strategies per interaction
+- Detect associated labels through 12+ heuristics (aria-label, Google Forms patterns, label[for], placeholder, Bootstrap layouts, etc.)
+- Construct LocatorBundle objects containing tag, id, name, placeholder, aria, dataAttrs, text, css, xpath, classes, pageUrl, bounding box, iframeChain, shadowHosts
+- Stream recorded steps to background service via chrome.runtime.sendMessage for persistent storage
+- Support iframe and Shadow DOM traversal during recording
 
-## Internal Architecture
-- **Event Handlers** (content.tsx lines 1-700): handleClick(), handleInput(), handleKeyDown() with special cases for Select2, radio, checkbox, contenteditable
-- **Label Detection Engine** (lines 200-450): 12+ heuristic strategies including Google Forms, Bootstrap layouts, aria-label, placeholder, label tags, nearest text nodes
-- **Locator Generators** (lines 450-550): getXPath(), recordElement(), getOriginalSelect() for comprehensive bundle creation
-- **Iframe Management** (lines 550-650): attachToAllIframes() recursive listener attachment, getIframeChain() path serialization
-- **Shadow DOM Support** (lines 650-750): getFocusedElement() traversal, coordination with page-interceptor.tsx for closed shadow root exposure
-- **Initialization** (lines 750-850): initContentScript() entry point, dynamic script injection helper
+## 2. Inputs
 
-## Critical Dependencies
-- **Files**: src/contentScript/content.tsx (1,446 lines monolith), src/contentScript/page-interceptor.tsx (shadow DOM interception)
-- **Libraries**: get-xpath for path generation, Chrome APIs (chrome.runtime.sendMessage, chrome.tabs)
-- **Browser APIs**: DOM Event API, Shadow DOM API, MutationObserver for dynamic content
-- **Subsystems**: Background Service for injection commands, Page Interceptor for shadow DOM events via window.postMessage
+- **User Interactions:** DOM Events (click, input, change, submit, keyup, focus, blur)
+- **Recording State:** isRecording flag (controlled by background script via chrome.runtime.sendMessage)
+- **Page Context:** document.location.href, document.activeElement, event.target
+- **Project Context:** projectId from chrome.storage.local (set by Recorder UI page)
+- **Element Attributes:** id, name, className, placeholder, aria-*, data-*, tag, textContent, computedStyle
+- **Structural Context:** parentNode chains, shadowRoot traversal, iframe contentWindow, getComputedStyle, getBoundingClientRect
 
-## Hidden Assumptions
-- Label detection relies on site-specific patterns (Bootstrap, Google Forms, Material-UI) that break with UI updates
-- Shadow DOM monkey-patching via Element.prototype.attachShadow interception could break with browser updates
-- Event listeners attached recursively to all iframes - assumes cross-origin frames will fail gracefully
-- Synthetic events (React-generated) filtered out by checking event.isTrusted flag
-- Select2 dropdowns resolved to original select elements using complex DOM traversal
+## 3. Outputs
 
-## Stability Concerns
-- **Monolithic Design**: 1,446 lines in single file makes testing and maintenance difficult
-- **Brittle Heuristics**: Label detection patterns are site-specific and fragile
-- **Memory Leaks**: Event listeners not properly cleaned up when recording stops
-- **Race Conditions**: Async iframe loading vs. listener attachment timing issues
-- **Performance**: Recursive iframe traversal can slow down complex pages with many nested frames
-
-## Edge Cases
-- **Dynamic iframes**: New iframes appearing after recording starts require MutationObserver detection
-- **Closed shadow DOM**: Requires page-interceptor.tsx injection before components load
-- **Google Autocomplete**: Special handling via closed shadow root exposure and event forwarding
-- **Contenteditable divs**: Treated as input fields, extract innerText/textContent
-- **Select2 dropdowns**: Click on styled div triggers lookup of hidden select element
-- **Radio/checkbox groups**: Match by aria-label or role container, not individual inputs
-
-## Developer-Must-Know Notes
-- Recording Engine handles BOTH recording AND replay logic (dual responsibility - should be split)
-- Bundle structure is critical contract between Recording and Replay - changes break compatibility
-- Label detection strategies run in priority order - first match wins (no confidence scoring)
-- XPath generation uses sibling indexing ([1], [2]) for uniqueness but fails if DOM reorders
-- Page-interceptor.tsx MUST inject before shadow DOM components initialize - timing sensitive
-- content.tsx contains ~600 lines of replay logic that belongs in separate module
-- Event listeners use composedPath() to traverse shadow boundaries during event capture
-
-## 2. Primary Responsibilities
-
-1. **Event Capture**: Attach and manage event listeners (click, input, keydown, mousedown) across documents and iframes
-2. **Label Detection**: Extract human-readable field names using 12+ heuristic strategies (aria-label, placeholder, nearby text, etc.)
-3. **Locator Generation**: Create multi-strategy element identifiers (XPath, ID, name, CSS, data-*, aria, bounding box)
-4. **Bundle Creation**: Package all element metadata into comprehensive "bundles" for replay resilience
-5. **Iframe Tracking**: Serialize iframe chains for cross-frame element resolution
-6. **Shadow DOM Handling**: Detect and expose closed shadow roots via monkey-patching
-7. **Event Normalization**: Filter synthetic events, detect clickable elements, extract values correctly
-8. **Step Transmission**: Send captured events to the Recorder UI via chrome.runtime messaging
-
-## 3. Dependencies
-
-### Files
-- `src/contentScript/content.tsx` (1,446 lines) - Main implementation
-- `src/contentScript/page-interceptor.tsx` (107 lines) - Shadow DOM interception
-- `src/background/background.ts` - Message relay (indirect)
-
-### External Libraries
-- `get-xpath` - XPath generation
-- Chrome APIs: `chrome.runtime.sendMessage`, `chrome.tabs`
-
-### Browser APIs
-- DOM Event API (addEventListener, Event constructors)
-- Shadow DOM API (attachShadow, shadowRoot)
-- MutationObserver (for dynamic iframe detection)
-
-## 4. Inputs / Outputs
-
-### Inputs
-- **User Actions**: Mouse clicks, keyboard input, form interactions, navigation
-- **DOM State**: Current page structure, iframe hierarchy, shadow DOM state
-- **Configuration**: Recording enabled/disabled state (from Recorder UI)
-
-### Outputs
-- **Recorded Steps**: Structured event objects sent to Recorder UI
+- **LocatorBundle Objects:** Serialized JSON structures containing 15+ element identification strategies
   ```typescript
   {
-    eventType: 'click' | 'input' | 'enter' | 'open',
+    tag: string,
+    id: string | null,
+    name: string | null,
+    placeholder: string | null,
+    aria: string | null,
+    dataAttrs: Record<string, string>,
+    text: string,
+    css: string,
     xpath: string,
-    value: string,
-    label: string,
-    x: number,
-    y: number,
-    bundle: {
-      id, name, className, dataAttrs, aria, placeholder,
-      tag, visibleText, xpath, bounding, iframeChain
-    }
+    classes: string[],
+    pageUrl: string,
+    bounding: { x, y, width, height },
+    iframeChain: number[] | null,
+    shadowHosts: string[] | null
   }
   ```
-- **Log Events**: Real-time capture notifications (timestamp, event type, selector)
+- **Recorded Steps Array:** Sent to background script via message bus with action "record_step"
+- **Console Logs:** Debug output for label detection, XPath generation, bundle construction
+- **Visual Feedback:** Highlight flashes on recorded elements (classList.add "recorder-highlight")
 
-### Message Format
-```typescript
-chrome.runtime.sendMessage({
-  type: "logEvent",
-  data: {
-    eventType, xpath, value, label, x, y, bundle, page
-  }
-});
-```
+## 4. Internal Architecture
 
-## 5. Interactions with Other Subsystems
+**Primary Location:** src/contentScript/content.tsx lines 1-850 (1,446-line monolith)
 
-### Dependencies (Consumes)
-- **Background Service** → Receives injection commands, provides tab context
-- **Page Interceptor** → Receives shadow DOM exposure and autocomplete events via `window.postMessage`
+**Key Functions:**
+- `handleClick(event)` - 80 lines: Captures click events, prevents default for <a> tags during recording, calls recordElement
+- `handleInput(event)` - 50 lines: Captures input/change events, records value for text inputs, calls recordElement
+- `recordElement(target, event, value?)` - 120 lines: Central orchestrator constructing LocatorBundle from element + context
+- `getXPath(element)` - 50 lines: Generates XPath with shadow root traversal support, uses `/html/body/...` absolute paths
+- `getLabelForTarget(element)` - 200 lines: 12+ label detection strategies returning { label: string, confidence: number }
+- `getDataAttributes(element)` - 20 lines: Extracts all data-* attributes into object
+- `getBoundingInfo(element)` - 15 lines: Returns { x, y, width, height } via getBoundingClientRect
+- `getIframeChain(element)` - 40 lines: Walks window.frameElement chain returning array of frame indices
+- `getShadowHosts(element)` - 30 lines: Walks shadowRoot.host chain returning XPath array
 
-### Dependents (Provides To)
-- **Recorder UI** ← Sends recorded steps for display and storage
-- **Replay Engine** ← Provides bundle structure used for element finding
+**Label Detection Strategies (Confidence Scoring):**
+1. Google Forms: .freebirdFormviewerComponentsQuestionBaseTitle (95%)
+2. aria-label attribute (90%)
+3. aria-labelledby reference (90%)
+4. label[for] via document.getElementById (85%)
+5. Ancestor <label> with textContent (80%)
+6. Placeholder attribute (70%)
+7. name attribute (65%)
+8. Adjacent sibling <label> or <span> (60%)
+9. Bootstrap form-label within .form-group (75%)
+10. Material-UI label with data-shrink (70%)
+11. Previous sibling text node (50%)
+12. Parent element textContent (40%)
 
-### Communication Mechanisms
-- **chrome.runtime.sendMessage**: Unidirectional step broadcasting to extension pages
-- **window.postMessage**: Cross-context communication with page scripts
-- **chrome.runtime.onMessage**: Receives replay commands (dual-mode: recording + replay)
+**Data Flow:**
+1. User interacts with page element
+2. Event listener fires (handleClick/handleInput)
+3. recordElement() constructs Bundle:
+   - getXPath(element) → xpath field
+   - getLabelForTarget(element) → label field  
+   - getDataAttributes(element) → dataAttrs field
+   - getBoundingInfo(element) → bounding field
+   - element.id, name, className → id, name, css fields
+4. Bundle sent to background: `chrome.runtime.sendMessage({ action: "record_step", bundle })`
+5. Background stores in Dexie projects.recorded_steps array
+6. Visual feedback: element.classList.add("recorder-highlight") for 500ms
 
-## 6. Internal Structure
+## 5. Critical Dependencies
 
-### Core Files
+- **chrome.runtime API:** sendMessage for background communication, ~64MB message size limit
+- **XPath Library (xpath 0.0.34):** document.evaluate() for XPath generation and validation
+- **Shadow DOM APIs:** element.shadowRoot, shadowRoot.host for closed shadow trees
+- **Iframe APIs:** window.parent, window.frameElement, iframe.contentWindow
+- **CSS Selectors:** document.querySelector, element.matches for pattern matching
+- **DOM APIs:** getBoundingClientRect, getComputedStyle, textContent, classList
+- **Event Handling:** addEventListener, preventDefault, stopPropagation, event.target
+- **Background Storage Coordination:** Assumes background script maintains Dexie.projects.recorded_steps
 
-#### `src/contentScript/content.tsx` (1,446 lines) ⚠️ MONOLITHIC
-**Sections**:
-1. **Event Handlers** (lines 1-700)
-   - `handleClick()` - Click event processing with Select2, radio, checkbox detection
-   - `handleInput()` - Input event capture with contenteditable support
-   - `handleKeyDown()` - Enter key detection
+**Breaking Changes Risk:**
+- Shadow DOM changes in Chrome v116+ (closed shadowRoot access restrictions)
+- XPath spec changes (unlikely but possible)
+- Chrome Extension Manifest V3 message size limits (current 64MB)
 
-2. **Label Detection Engine** (lines 200-450)
-   - `getLabelForTarget()` - 12+ heuristic strategies:
-     - Google Forms question titles
-     - Label tags (parent, for-attribute, aria-labelledby)
-     - Placeholder attributes
-     - Bootstrap row/column layouts
-     - Select2 dropdown labels
-     - Fallback to nearest text nodes
+## 6. Hidden Assumptions
 
-3. **Locator Generators** (lines 450-550)
-   - `getXPath()` - Generate unique XPath with sibling indexing
-   - `recordElement()` - Create comprehensive bundle with all identifiers
-   - `getOriginalSelect()` - Resolve Select2 to original `<select>`
+- **Synchronous XPath Generation:** Assumes getXPath() completes <100ms (no await, blocks event handler)
+- **Stable DOM Structure:** XPath generated at recording time must be valid at replay time (no dynamic ID changes)
+- **Single Iframe Depth:** iframeChain logic tested primarily for 1-2 levels, not deeply nested structures
+- **English Text Patterns:** Label detection heuristics optimized for English form patterns (Google Forms, Bootstrap)
+- **No Replay Feedback Loop:** Recording engine assumes bundles are write-only; no validation if replay can resolve them
+- **Background Script Always Available:** No retry logic if chrome.runtime.sendMessage fails (network error, background restart)
+- **Single Recording Session:** isRecording flag not designed for concurrent multi-tab recording
+- **Static Page Loads:** Does not record SPA route transitions or dynamic content loads without user interaction
 
-4. **Iframe Management** (lines 550-650)
-   - `attachToAllIframes()` - Recursive iframe listener attachment
-   - `getIframeChain()` - Build parent iframe path
-   - `serializeIframeChain()` - Convert to JSON-serializable structure
+## 7. Stability Concerns
 
-5. **Shadow DOM Support** (lines 650-750)
-   - `getFocusedElement()` - Traverse into iframe activeElement
-   - Shadow root detection and exposure coordination
+- **1,446-Line Monolith:** content.tsx contains recording + replay + message handling; difficult to unit test in isolation
+- **12+ Label Strategies:** High complexity in getLabelForTarget() with nested conditions; edge cases may return incorrect labels
+- **XPath Brittleness:** Absolute XPath (/html/body/div[2]/...) breaks if page structure changes between recording and replay
+- **Shadow DOM Reliability:** getShadowHosts() may fail for closed shadow roots without proper element.openOrClosedShadowRoot polyfill
+- **Message Bus Capacity:** Sending 500+ bundles in rapid succession may exceed chrome.runtime buffer, causing dropped messages
+- **Memory Leaks:** Event listeners never removed if recording disabled mid-session (no cleanup handler)
+- **No Transaction Safety:** Multiple record_step messages sent without acknowledgement; if background crashes, steps lost
 
-6. **Initialization** (lines 750-850)
-   - `initContentScript()` - Main entry point
-   - `attachListeners()` - Event listener registration
-   - `injectScript()` - Dynamic script injection helper
+## 8. Edge Cases
 
-#### `src/contentScript/page-interceptor.tsx` (107 lines)
-**Purpose**: Intercept closed shadow roots before they're sealed
-- Monkey-patches `Element.prototype.attachShadow`
-- Exposes closed shadow roots via `__realShadowRoot` property
-- Special handling for `<gmp-place-autocomplete>` (Google Places)
-- Monitors for input/selection events inside closed shadow roots
-- Sends events back to content script via `window.postMessage`
+- **Hidden Elements:** `display: none` elements recorded but bounding box returns { x: 0, y: 0, width: 0, height: 0 }
+- **Overlapping Elements:** Click on element behind another may record wrong target (event.target vs event.currentTarget)
+- **Dynamic Forms:** Google Forms adding/removing fields mid-recording causes XPath indices to shift
+- **React Portals:** Elements rendered outside parent tree may have incorrect iframeChain (shadowHosts tracked but not React portals)
+- **Canvas/SVG Clicks:** Clicks on <canvas> record canvas element, not sub-coordinates; SVG may record <svg> vs <path>
+- **Rapid Clicks:** Double-click, triple-click may record duplicate bundles without deduplication
+- **Iframe Cross-Origin:** contentWindow.document access blocked by CORS; iframeChain returns partial path
+- **Shadow DOM Slots:** <slot> elements may resolve to wrong label if slotted content not in shadowRoot
+- **Custom Elements:** Web components with closed shadowRoot may fail label detection entirely
+- **File Inputs:** `<input type="file">` records click but value is empty (security restriction)
 
-### Data Structures
+## 9. Developer-Must-Know Notes
 
-#### Bundle (Primary Data Model)
-```typescript
-interface Bundle {
-  id?: string;
-  name?: string;
-  className?: string;
-  dataAttrs: Record<string, string>;
-  aria?: string;
-  placeholder?: string;
-  tag: string;
-  visibleText?: string;
-  xpath: string;
-  bounding?: { left, top, width, height };
-  iframeChain?: IframeInfo[];
-  shadowHosts?: string[];
-  isClosedShadow?: boolean;
-}
-```
+### Bundle Structure is Immutable Contract
+- LocatorBundle format is shared with replay engine; changing fields breaks existing recordings
+- Always maintain backward compatibility when adding fields (use optional properties)
+- Never remove fields (breaks replay for old projects)
 
-## 7. Complexity Assessment
+### XPath is Primary, Fallbacks are Secondary
+- Replay engine prioritizes xpath (100% confidence) over all other strategies
+- Only generate XPath if element is in static DOM (not for ephemeral modals)
+- Use data-testid attributes for stable identification in SPAs
 
-**Complexity Rating**: 🔴 **HIGH** (9/10)
+### Label Detection is Best-Effort, Not Guaranteed
+- getLabelForTarget() returns `{ label: "Unlabeled", confidence: 0 }` if all strategies fail
+- Confidence scoring is heuristic-based, not ML-trained; tuning required per site
+- Google Forms detection is most reliable (95%), generic patterns less so (40-60%)
 
-### Why Complexity Exists
+### Recording Does Not Validate Replayability
+- No check if generated XPath/selectors will resolve at replay time
+- No simulation of element finding strategies during recording
+- Developers must manually test replay after recording in diverse DOM states
 
-1. **Browser Inconsistencies**: Must handle Chrome, Firefox, Edge quirks
-2. **Dynamic DOM**: Pages load content asynchronously, iframes appear/disappear
-3. **Shadow DOM Variety**: Open roots, closed roots, nested shadow DOM, Web Components
-4. **Form Framework Diversity**: React forms, Bootstrap layouts, Material-UI, Select2, Jotform, Google Forms
-5. **Label Ambiguity**: No standard way to associate labels with inputs across frameworks
-6. **Event Timing**: Synthetic vs. trusted events, React re-renders, debouncing
-7. **Monolithic Design**: 1,446 lines in single file makes testing and maintenance difficult
+### Performance Impact on High-Frequency Events
+- Input events on text fields fire per keystroke; recordElement() called 50+ times for paragraph
+- No debouncing or throttling; may cause UI lag on slow machines
+- Consider batching bundles before chrome.runtime.sendMessage
 
-### Risks
+### Shadow DOM and Iframe Support is Partial
+- getShadowHosts() works for open shadowRoot only; closed shadowRoot requires element.openOrClosedShadowRoot polyfill
+- Iframe traversal tested for same-origin iframes only; cross-origin blocked by browser
+- Deeply nested iframes (3+ levels) may have incomplete iframeChain
 
-1. **Brittle Heuristics**: Label detection relies on site-specific patterns that break with UI updates
-2. **Monkey-Patch Fragility**: Shadow DOM interception could break with browser updates
-3. **Performance**: Attaching listeners to all iframes recursively can slow down complex pages
-4. **Memory Leaks**: Event listeners not properly cleaned up when recording stops
-5. **Race Conditions**: Async iframe loading vs. listener attachment timing
-6. **Maintenance Burden**: Changes require understanding 1,400+ line file
+### No Error Recovery for Message Bus Failures
+- If chrome.runtime.sendMessage fails (background script dead), bundle is silently lost
+- No local queue or retry mechanism
+- Developers must monitor chrome.runtime.lastError in production
 
-### Refactoring Implications
-
-**Immediate Needs** (Phase 1):
-1. Split into 5-7 focused modules:
-   - `EventListenerManager` - Attach/detach/lifecycle
-   - `LabelDetectionEngine` - Pluggable strategy pattern
-   - `LocatorGenerator` - XPath, CSS, ID generation
-   - `IframeCoordinator` - Cross-frame tracking
-   - `ShadowDOMHandler` - Open/closed root handling
-   - `BundleBuilder` - Data packaging
-
-**Long-Term Vision** (Phase 2):
-2. Make label detection pluggable:
-   - Define `ILabelStrategy` interface
-   - Implement per-framework strategies (Bootstrap, Material-UI, etc.)
-   - Allow user-defined custom strategies
-
-3. Add configuration layer:
-   - Which events to capture (click, hover, focus)
-   - Locator priority (prefer ID over XPath)
-   - Performance tuning (debounce, throttle)
-
-4. Improve testability:
-   - Unit tests for label detection strategies
-   - Integration tests for iframe traversal
-   - Mock DOM fixtures for edge cases
-
-**Complexity Reduction Target**: Medium (6/10) after refactoring
+### Testing Requires Real Chrome Extension Context
+- Cannot unit test in jsdom or puppeteer without chrome.runtime mock
+- Bundle generation logic tightly coupled to DOM traversal (hard to extract)
+- Recommend E2E tests in real extension environment over unit tests

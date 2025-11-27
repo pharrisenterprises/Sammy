@@ -1,58 +1,138 @@
-# environment-requirements.md
+# Environment Requirements
 
-## Purpose
-Defines required development environment setup, tools, versions, and system dependencies for building and testing the Sammy browser automation extension.
+## 1. Purpose
+Define software versions, tools, and configuration required to develop, build, test, and deploy the Sammy Chrome Extension test automation recorder.
 
-## Inputs
-- Operating system: Linux (Ubuntu 24.04.3 LTS in dev container), macOS, or Windows
-- Node.js: Version 18.x or 20.x (LTS releases)
-- Package manager: npm 9.x+ (comes with Node.js)
+## 2. Required Software
 
-## Outputs
-- Working development environment capable of running npm install, npm run build, npm run dev
-- Chrome browser with extension developer mode enabled for testing
-- VS Code (recommended) with TypeScript, ESLint, Tailwind CSS extensions
+### Node.js and npm
+- **Node.js:** v18.x or v20.x (Vite 6.x requires Node 18+)
+- **npm:** v9.x or v10.x (included with Node.js)
+- Check versions: `node -v` (should show v18.x or v20.x), `npm -v`
 
-## Internal Architecture
-- **Node.js Environment**: Required for npm package management, Vite build system, TypeScript compilation, development server
-- **Command Line Tools**: git for version control, apt/dpkg for Linux package management, docker for dev container (optional)
-- **Browser Requirements**: Chrome/Edge/Brave (Chromium-based) with Manifest V3 support (Chrome 88+)
-- **Editor Setup**: VS Code with recommended extensions: ESLint, Prettier, Tailwind CSS IntelliSense, TypeScript and JavaScript Language Features
+### Chrome Browser
+- **Google Chrome:** v120+ (Manifest V3 support)
+- **Chrome DevTools:** Built-in (for extension debugging)
+- **Extensions Developer Mode:** Enable at chrome://extensions
 
-## Critical Dependencies
-- **Runtime**: Node.js 18.x or 20.x, npm 9.x+
-- **Build Tools**: Vite 6.3.5, TypeScript 5.0.2, SWC compiler
-- **Browser**: Chrome 88+ or equivalent Chromium-based browser
-- **System Libraries**: None required (pure JavaScript project)
+### Code Editor (Optional but Recommended)
+- **VS Code:** Latest version with extensions:
+  - ESLint (dbaeumer.vscode-eslint)
+  - Tailwind CSS IntelliSense (bradlc.vscode-tailwindcss)
+  - TypeScript and JavaScript Language Features (built-in)
 
-## Hidden Assumptions
-- Dev container uses Ubuntu 24.04.3 LTS - assumes Linux compatibility for all dependencies
-- Node.js installed via official installer or nvm - assumes PATH configured correctly
-- Chrome extension developer mode enabled - requires manual browser configuration
-- npm ci used in CI/CD - assumes package-lock.json committed to repository
-- VS Code extensions auto-installed from .vscode/extensions.json if present
+### Git
+- **Git:** v2.30+ for version control
+- Check version: `git --version`
 
-## Stability Concerns
-- **Node Version Drift**: Project built with Node 18/20 - may break with Node 22+ due to breaking changes
-- **NPM Dependency Hell**: 70+ dependencies with potential version conflicts - package-lock.json critical
-- **Browser Version**: Manifest V3 features may vary across Chrome versions - target Chrome 100+ for stability
-- **Dev Container Dependency**: If using Docker, requires Docker Desktop running - not all developers use containers
-- **Global vs Local**: Some tools (TypeScript, ESLint) might be globally installed - conflicts with project versions
+## 3. Development Dependencies
 
-## Edge Cases
-- **Windows Path Issues**: Backslashes in paths may break shell scripts - use cross-platform path tools
-- **Port Conflicts**: Vite dev server uses port 5173 - fails if port already in use
-- **Memory Constraints**: Vite build may fail on systems with < 4GB RAM - increase Node.js heap size
-- **Case-Sensitive Filesystems**: Linux/macOS case-sensitive, Windows not - import path mismatches cause errors on Linux
-- **NPM Registry Access**: Requires internet connection during npm install - offline mode requires pre-downloaded cache
-- **Chrome Profile**: Extension installed per Chrome profile - switching profiles loses test data
+### Installed via npm
+All dependencies in package.json:
+- **React 18.2.0** and **react-dom 18.2.0**
+- **TypeScript 5.0.2**
+- **Vite 6.3.5**
+- **Tailwind CSS 3.4.17**
+- **Dexie.js 4.0.11**
+- **@types/chrome 0.0.263** (Chrome Extension API types)
 
-## Developer-Must-Know Notes
-- Install Node.js from https://nodejs.org (use LTS version, currently 18.x or 20.x)
-- Run npm install in project root to install all dependencies (creates node_modules/ directory)
-- Enable Chrome developer mode: chrome://extensions → toggle Developer mode → Load unpacked → select dist/ folder
-- Recommended VS Code extensions: esbenp.prettier-vscode, dbaeumer.vscode-eslint, bradlc.vscode-tailwindcss
-- Dev container configuration in .devcontainer/ if using VS Code Remote Containers
-- Environment variables: None required for basic development (optional: VITE_API_URL for backend integration)
-- Build commands: npm run build (production), npm run dev (development server), npm run watch:build (auto-rebuild)
-- Testing extension: Load dist/ folder as unpacked extension in Chrome after building
+Install all dependencies:
+```bash
+npm install
+```
+
+## 4. Build Configuration Files
+
+### TypeScript
+- `tsconfig.json`: TypeScript compiler options (target: ES2020, module: ESNext, jsx: react-jsx)
+- `tsconfig.node.json`: Node.js environment config for Vite scripts
+
+### Vite
+- `vite.config.ts`: UI pages build configuration
+- `vite.config.bg.ts`: Background script build configuration
+
+### Tailwind CSS
+- `tailwind.config.js`: Tailwind configuration (custom colors, fonts, plugins)
+- `postcss.config.js`: PostCSS plugins (tailwindcss, autoprefixer)
+
+### ESLint (Optional)
+- `.eslintrc.json` (if present): Linting rules for TypeScript/React
+
+## 5. Chrome Extension Setup
+
+### Load Unpacked Extension
+1. Build extension: `npm run build`
+2. Open Chrome: chrome://extensions
+3. Enable "Developer mode" (toggle top-right)
+4. Click "Load unpacked"
+5. Select `dist/` directory
+
+### Manifest V3 Requirements
+- **manifest.json** in public/ with:
+  - `"manifest_version": 3`
+  - `"background": { "service_worker": "js/background.js" }`
+  - `"content_scripts": [{ "matches": ["<all_urls>"], "js": ["js/main.js"] }]`
+  - Permissions: `"storage"`, `"activeTab"`, `"tabs"`, `"scripting"`
+
+## 6. Optional Tools
+
+### Testing (Planned)
+- **Vitest:** Unit test runner (not yet implemented)
+- **Puppeteer:** E2E testing (not yet implemented)
+
+### Debugging
+- **Chrome DevTools:** Inspect extension pages (right-click popup → Inspect)
+- **Background Script Console:** chrome://extensions → "Inspect views: service worker"
+- **Content Script Console:** Inspect web page → Console shows content script logs
+
+### CI/CD (Planned)
+- **GitHub Actions:** Automated build and release (not yet configured)
+
+## 7. Environment Variables
+
+Currently none required. Future Supabase integration may need:
+- `VITE_SUPABASE_URL`
+- `VITE_SUPABASE_ANON_KEY`
+
+## 8. Common Issues
+
+### "Node version too low"
+- Solution: Install Node.js 18+ from https://nodejs.org
+
+### "Module not found" after npm install
+- Solution: Delete node_modules/ and package-lock.json, run `npm install` again
+
+### "Extension failed to load"
+- Solution: Check dist/manifest.json exists, check background.js and main.js present in dist/js/
+
+### "TypeScript errors in VS Code"
+- Solution: Run `npx tsc --noEmit` to check for errors, ensure tsconfig.json points to src/
+
+## 9. Developer-Must-Know Notes
+
+### Node Version Management
+Use nvm (Node Version Manager) to switch Node versions:
+```bash
+nvm install 20
+nvm use 20
+```
+
+### Clean Build
+```bash
+rm -rf dist/ node_modules/ package-lock.json
+npm install
+npm run build
+```
+
+### Hot Reload Not Supported
+- Chrome extensions require full reload after code changes
+- Use watch mode: `npm run watch:build`, then click reload button at chrome://extensions
+
+### Debugging Background Script
+- Background console: chrome://extensions → "service worker" link
+- Background may terminate after 30s (Manifest V3); logs disappear
+
+### Debugging Content Scripts
+- Inspect web page where extension runs
+- Console shows content script logs mixed with page logs
+- Filter by "user messages" or search for extension-specific log prefixes

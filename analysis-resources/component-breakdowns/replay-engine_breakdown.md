@@ -1,327 +1,173 @@
-# replay-engine_breakdown.md
+# Replay Engine - Component Breakdown
 
-## Purpose
-Action execution system that takes recorded steps and replays them on live web pages using multi-strategy element finding and framework-safe interaction simulation.
+## 1. Purpose
 
-## Inputs
-- Recorded steps: array of action bundles from Recording Engine with event type, bundle metadata, value, label
-- CSV data: optional data rows for parameterized execution from Field Mapper
-- Execution context: tab ID, iframe chain, page state from Test Runner
-- Step format: { event: 'click'|'input'|'enter', path: string, value?: string, label: string, bundle: {...} }
+The Replay Engine is the action execution subsystem embedded in the content script that resolves recorded LocatorBundles to live DOM elements using a 9-tier fallback strategy, simulates user interactions with React-safe input patterns, and reports step outcomes back to the TestRunner UI.
 
-## Outputs
-- Execution results: success/failure per step with { success: boolean, duration: number, error?: string }
-- Status updates: real-time progress notifications to Test Runner UI via chrome.tabs.sendMessage response
-- Logs: step-by-step execution trace with info/success/error levels
-- Notification overlay: temporary UI feedback on target page showing current step progress
+**Core Responsibilities:**
+- Resolve LocatorBundle objects to live DOM elements via 9 fallback strategies (XPath → ID → name → aria → placeholder → data-attrs → fuzzy text → bounding box → retry)
+- Execute click, input, navigation actions with human-like timing and React compatibility
+- Handle iframe traversal and Shadow DOM element access during replay
+- Report step success/failure with detailed error messages via chrome.runtime.sendMessage
+- Manage execution timing, timeouts (2s per step), and retry logic (150ms intervals)
 
-## Internal Architecture
-- **Element Finding** (content.tsx lines 1050-1250): findElementFromBundle() with 9-tier fallback strategy (XPath → ID → name → aria → placeholder → fuzzy text → bounding box → data attributes → retry)
-- **Action Execution** (lines 1250-1446): playAction() with framework-specific handling for React inputs, Select2, radio/checkbox, Google Autocomplete
-- **React-Safe Input** (focusAndSetValue): Property descriptor bypass to set value on controlled inputs without triggering React warnings
-- **Human-Like Behavior** (humanClick): Realistic event sequence (mouseover → mousedown → mouseup → click)
-- **Visibility Management** (temporarilyShow): Unhide hidden elements during replay, restore after execution
-- **Page-Context Script** (replay.ts 152 lines): Handles Google Autocomplete inside closed shadow roots via window.postMessage
+## 2. Inputs
 
-## Critical Dependencies
-- **Files**: src/contentScript/content.tsx (lines 850-1,446), src/contentScript/replay.ts, src/pages/TestRunner.tsx
-- **Libraries**: xpath for evaluation, string-similarity for fuzzy matching
-- **Browser APIs**: DOM manipulation (focus, blur, dispatchEvent), Event constructors (MouseEvent, KeyboardEvent, InputEvent), Shadow DOM (shadowRoot, getRootNode)
-- **Subsystems**: Recording Engine for bundle structure, Test Runner for orchestration, Page Replay Script for autocomplete delegation
+- **Recorded Steps Array:** Array of LocatorBundle objects from projects.recorded_steps (Dexie storage)
+- **CSV Data Rows:** Optional test data for parameterized replay (e.g., login credentials, form values)
+- **Replay Configuration:** Timeout values, retry intervals, human-like delay ranges (50-300ms)
+- **Page Context:** Current document.location.href, active iframes, shadow roots
+- **Execution State:** Current step index, paused/running status from TestRunner UI
 
-## Hidden Assumptions
-- XPath resolution is highest priority fallback - assumes XPath stability between recording and replay
-- React controlled inputs require property descriptor hack - assumes React internals don't change
-- Fuzzy text matching threshold of 0.4 (40%) is universal - may be too low/high for different sites
-- Fixed 2000ms timeout for element finding - assumes page load completes within this window
-- Bounding box proximity threshold of 200px - assumes elements don't move beyond this distance
-- Select2 dropdowns always have .select2-hidden-accessible class - framework version dependent
-- Google Autocomplete always uses gmp-place-autocomplete tag - Google Maps API specific
+## 3. Outputs
 
-## Stability Concerns
-- **Element Volatility**: Minor DOM changes (class names, IDs) break element finding between recording and replay
-- **Framework Diversity**: React/Vue/Angular/jQuery each require different event dispatching patterns
-- **Property Descriptor Hack**: React value setter bypass may break with major React version updates
-- **Shadow DOM Barriers**: Closed shadow roots without interception are completely inaccessible
-- **Timing Issues**: Elements not yet loaded, animations in progress, lazy rendering cause false failures
-- **False Positives**: Fuzzy text matching at 40% threshold may click wrong similar elements
+- **Step Execution Results:** Status (passed/failed), duration (ms), error messages sent via chrome.runtime.sendMessage({ action: "step_result", stepId, status, duration, error })
+- **Progress Updates:** Current step index, percentage complete broadcast to TestRunner UI
+- **Console Logs:** Debug output for element resolution attempts, locator strategy confidence scores, timing data
+- **Final Test Report:** Summary with passed_steps, failed_steps, total_duration, error_log
 
-## Edge Cases
-- **Dynamic IDs**: Elements with auto-generated IDs (react-1234) fail ID strategy, fall back to XPath/fuzzy
-- **Stale XPath**: DOM restructuring between recording and replay invalidates XPath, requires fallback strategies
-- **React Strict Mode**: Double-rendering in development can interfere with property descriptor timing
-- **Select2 Multiple**: Multi-select dropdowns require special handling not currently implemented
-- **Iframe Navigation**: If iframe src changes between recording and replay, element finding fails completely
-- **Shadow DOM Interception Failure**: If page-interceptor.tsx loads after shadow component, closed roots remain inaccessible
-- **Concurrent Step Execution**: Parallel execution interferes with page state (e.g., two inputs focus same element)
+## 4. Internal Architecture
 
-## Developer-Must-Know Notes
-- Replay logic is embedded in same file as recording (content.tsx) - should be extracted to separate module
-- Element finding tries 9 strategies sequentially - no parallel attempts or confidence scoring
-- React input handling waits 50ms after value set before sending Enter - timing critical for form submission
-- Google Autocomplete requires page-context script injection - cannot work from content script context alone
-- Bundle structure is immutable contract - changing fields breaks all recorded tests
-- temporarilyShow() manipulates display style - may conflict with CSS transitions or animations
-- findElementFromBundle() has exponential retry backoff - can hang for up to 2 seconds per failed step
-- XPath resolution in shadow DOM uses __realShadowRoot property - relies on page-interceptor monkey patch
+**Primary Location:** src/contentScript/content.tsx lines 850-1446 (shared monolith with recording engine)
 
-## 2. Primary Responsibilities
+**Key Functions:**
+- `findElementFromBundle(bundle, timeout=2000)` - 150 lines: Central element resolution orchestrator with 9-tier fallback and retry loop
+- `humanClick(element)` - 40 lines: Simulates natural click sequence (mouseover → mousemove → mousedown → mouseup → click with 50-150ms delays)
+- `humanInput(element, value)` - 60 lines: React-safe input simulation using property descriptors to bypass React's event system
+- `executeStep(step, csvRow?)` - 80 lines: Step execution coordinator handling click, input, navigation, delay actions
+- `waitForElement(selector, timeout)` - 30 lines: Async polling for element appearance with configurable timeout
+- `resolveXPathInShadow(xpath, shadowRoot)` - 50 lines: XPath evaluation with shadow root context support
 
-1. **Element Finding**: Locate elements using multi-strategy fallback (ID, name, XPath, aria, fuzzy text, bounding box)
-2. **Action Execution**: Simulate user interactions (click, input, enter, select)
-3. **React-Safe Input**: Handle controlled inputs by bypassing React's synthetic event system
-4. **Value Injection**: Set input values, select options, toggle checkboxes/radios
-5. **Human-Like Behavior**: Dispatch event sequences (mouseover → mousedown → mouseup → click)
-6. **Visibility Management**: Temporarily show hidden elements during replay
-7. **Shadow DOM Replay**: Navigate into open shadow roots, fallback for closed roots
-8. **Google Autocomplete**: Special handling via page-context replay script
-9. **Iframe Context Resolution**: Execute actions in correct iframe based on saved chain
-10. **Error Handling**: Graceful degradation when elements not found
+**9-Tier Fallback Strategy (Confidence Scoring):**
+1. **XPath Absolute (100%):** document.evaluate(bundle.xpath) with shadow root traversal
+2. **ID + Attributes (90%):** document.querySelector(`#${id}[name="${name}"]`)
+3. **Name Attribute (80%):** document.querySelector(`[name="${name}"]`)
+4. **Aria Labels (75%):** document.querySelector(`[aria-label="${aria}"]`)
+5. **Placeholder (70%):** document.querySelector(`[placeholder="${placeholder}"]`)
+6. **Data Attributes (65%):** document.querySelector(`[data-testid="${dataAttrs.testid}"]`)
+7. **Fuzzy Text Match (40%):** Array.from(document.querySelectorAll(tag)).find(el => stringSimilarity(el.textContent, bundle.text) > 0.4)
+8. **Bounding Box (200px threshold):** Find element with closest center coordinates (Euclidean distance < 200px)
+9. **Retry Loop (150ms interval):** Re-execute strategies 1-8 every 150ms up to 2s timeout
 
-## 3. Dependencies
-
-### Files
-- `src/contentScript/content.tsx` (1,446 lines) - Main replay implementation (lines 850-1,446)
-- `src/contentScript/replay.ts` (152 lines) - Page-context Google Autocomplete handler
-- `src/pages/TestRunner.tsx` (809 lines) - Orchestrates replay execution
-
-### External Libraries
-- `xpath` - XPath evaluation for element finding
-- Chrome APIs: `chrome.tabs.sendMessage`, `chrome.runtime.onMessage`
-
-### Browser APIs
-- DOM Manipulation (focus, blur, click, dispatchEvent)
-- Event Constructors (MouseEvent, KeyboardEvent, InputEvent)
-- Shadow DOM (shadowRoot, getRootNode)
-
-## 4. Inputs / Outputs
-
-### Inputs
-- **Recorded Steps**: Array of action bundles from Recording Engine
-- **CSV Data**: Optional data rows for parameterized execution (from Field Mapper)
-- **Execution Context**: Tab ID, iframe chain, page state
-
-### Step Format (Input)
-```typescript
-{
-  event: 'click' | 'input' | 'enter',
-  path: string,  // XPath
-  value?: string,
-  label: string,
-  bundle: {
-    id, name, xpath, aria, placeholder, dataAttrs,
-    tag, visibleText, bounding, iframeChain, shadowHosts
-  }
-}
+**React-Safe Input Pattern:**
+```javascript
+const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+  HTMLInputElement.prototype,
+  'value'
+).set;
+nativeInputValueSetter.call(element, value);
+element.dispatchEvent(new Event('input', { bubbles: true }));
+element.dispatchEvent(new Event('change', { bubbles: true }));
 ```
 
-### Outputs
-- **Execution Results**: Success/failure per step
-  ```typescript
-  {
-    success: boolean,
-    duration: number,
-    error?: string
-  }
-  ```
-- **Status Updates**: Real-time progress notifications to Test Runner UI
-- **Logs**: Step-by-step execution trace (info, success, error levels)
+**Data Flow:**
+1. TestRunner UI sends chrome.runtime.sendMessage({ action: "start_replay", projectId, csvRow })
+2. Content script retrieves recorded_steps from background
+3. For each step in steps:
+   - Call executeStep(step, csvRow)
+   - findElementFromBundle(step.bundle) resolves to element
+   - humanClick(element) or humanInput(element, value) simulates action
+   - Send chrome.runtime.sendMessage({ action: "step_result", status, duration, error })
+4. After all steps, send chrome.runtime.sendMessage({ action: "replay_complete", passed, failed })
 
-### Message Protocol
-**From Test Runner → Content Script**:
-```typescript
-chrome.tabs.sendMessage(tabId, {
-  type: "runStep",
-  data: { event, bundle, value, label }
-});
-```
+## 5. Critical Dependencies
 
-**Response**:
-```typescript
-sendResponse(success: boolean);
-```
+- **chrome.runtime API:** sendMessage for TestRunner communication, onMessage for replay commands
+- **XPath Library (xpath 0.0.34):** document.evaluate() for XPath resolution
+- **string-similarity 4.0.4:** compareTwoStrings() for fuzzy text matching (Dice coefficient)
+- **Shadow DOM APIs:** element.shadowRoot, getRootNode() for closed shadow root traversal
+- **Iframe APIs:** contentWindow.document, window.parent for cross-frame element access
+- **React Property Descriptors:** HTMLInputElement.prototype.value setter bypass for controlled inputs
+- **DOM APIs:** querySelector, querySelectorAll, getBoundingClientRect, dispatchEvent
+- **Background Storage:** Assumes Dexie.projects.recorded_steps available via message bus
 
-## 5. Interactions with Other Subsystems
+**Breaking Changes Risk:**
+- React v19+ may change controlled input descriptor implementation
+- string-similarity algorithm changes could affect fuzzy matching threshold (current 0.4)
+- Chrome v120+ XPath behavior changes in shadow DOM context
 
-### Dependencies (Consumes)
-- **Recording Engine** → Uses bundle structure and locator metadata
-- **Test Runner** → Receives step execution commands via chrome.tabs.sendMessage
-- **Page Replay Script** → Delegates Google Autocomplete actions via window.postMessage
-- **Background Service** → Coordinates tab injection and lifecycle
+## 6. Hidden Assumptions
 
-### Dependents (Provides To)
-- **Test Runner** ← Returns execution status and error details
-- **Notification UI** ← Shows step progress overlay on target page
+- **2-Second Timeout Sufficient:** Assumes all elements load/render within 2s (SPAs with lazy loading may fail)
+- **150ms Retry Interval Optimal:** Hardcoded retry timing may be too fast for slow networks or too slow for fast pages
+- **Fuzzy Match Threshold 0.4:** Dice coefficient threshold chosen empirically; not validated across diverse sites
+- **Bounding Box Stability:** Assumes element positions don't shift during replay (e.g., animations, lazy images)
+- **Single Element Match:** Strategies return first match; no disambiguation if multiple elements match selector
+- **React Version Agnostic:** Property descriptor bypass tested on React 16-18 only
+- **No Dynamic Wait Logic:** Timeouts are fixed; no adaptive waiting based on page load indicators (network idle, DOMContentLoaded)
+- **English Text Matching:** Fuzzy text matching assumes English character sets; may fail for non-Latin scripts
 
-### Communication Mechanisms
-- **chrome.tabs.sendMessage**: Receives replay commands from Test Runner
-- **window.postMessage**: Sends autocomplete replay actions to page context
-- **sendResponse callback**: Returns synchronous success/failure
+## 7. Stability Concerns
 
-## 6. Internal Structure
+- **Shared Monolith with Recording:** 1,446-line content.tsx contains both recording and replay; changes to one risk breaking the other
+- **Fallback Strategy Complexity:** 9 strategies with nested conditions make debugging failures difficult
+- **No Graceful Degradation:** If all 9 strategies fail, step marked failed immediately; no user-configurable fallback (e.g., "skip and continue")
+- **Hardcoded Timeouts:** 2s timeout, 150ms retry interval not configurable per step or project
+- **Memory Leaks:** Retry loops may accumulate setTimeout handles if replay stopped mid-step
+- **No Transaction Safety:** Steps executed independently; if replay crashes, partial execution state unrecoverable
+- **React Descriptor Brittleness:** Property descriptor bypass may fail for custom input components (e.g., Material-UI, Chakra UI)
 
-### Core Functions (in `content.tsx`)
+## 8. Edge Cases
 
-#### Element Finding (lines 1050-1250)
+- **Hidden Elements at Replay:** Element found but `display: none`; click/input fail silently or throw DOMException
+- **Overlapping Elements:** XPath resolves to element behind modal; click intercepted by overlay
+- **Dynamic IDs:** XPath /html/body/div[@id="root-123"] fails if ID randomized on page load
+- **Iframe Timing:** Iframe not fully loaded when step executed; contentWindow.document throws SecurityError
+- **Shadow DOM Slots:** Slotted elements may have XPath pointing to <slot> rather than actual element
+- **React Portal Elements:** Portals rendered outside parent tree; XPath resolution fails
+- **Lazy-Loaded Content:** Element not in DOM until scroll/user interaction; findElementFromBundle times out
+- **Canvas/SVG Elements:** Bounding box match finds canvas, but click coordinates incorrect for sub-element
+- **File Upload Inputs:** Cannot programmatically set value; replay fails for `<input type="file">`
+- **Select2 Dropdowns:** Styled select may not respond to React-safe input; requires custom logic
 
-**`findElementFromBundle(bundle, opts)`** (150 lines) ⚠️ COMPLEX
-Multi-strategy element resolution:
+## 9. Developer-Must-Know Notes
 
-1. **XPath Resolution** (highest priority)
-   - Direct document.evaluate()
-   - Shadow DOM XPath traversal via `resolveXPathInShadow()`
-   - Contenteditable div special case
+### Bundle Structure is Immutable Contract
+- Replay engine depends on exact LocatorBundle fields from recording engine
+- Never remove fields from Bundle interface (breaks old recordings)
+- Optional fields must have null checks in findElementFromBundle
 
-2. **ID + Attributes Match** (high confidence)
-   - querySelector by ID
-   - Cross-check name, className, aria, data-attrs
-   - Bounding box proximity scoring
+### XPath is Primary, But Not Always Best
+- XPath at 100% confidence, but most brittle strategy (fails on DOM structure changes)
+- Prefer data-testid or aria-label for SPAs with dynamic DOMs
+- Consider generating relative XPath (//*[@id='root']//button) instead of absolute (/html/body/div/div/button)
 
-3. **Name/Aria/Placeholder Lookup** (medium confidence)
-   - getElementsByName()
-   - querySelector by aria-labelledby
-   - querySelector by placeholder
+### Fuzzy Matching is Expensive
+- stringSimilarity.compareTwoStrings() runs on every element of tag type (e.g., all <button>s)
+- For pages with 100+ buttons, fuzzy strategy adds 500ms+ overhead
+- Consider disabling fuzzy matching for performance-critical replays
 
-4. **Fuzzy Text Matching** (low confidence)
-   - textSimilarity() comparison (string-similarity library)
-   - Match threshold: 0.4 (40% similarity)
+### React-Safe Input is Essential for Controlled Components
+- React controlled inputs ignore .value = directly; must use property descriptor
+- Must fire both 'input' and 'change' events in sequence
+- For non-React inputs, property descriptor still works (backward compatible)
 
-5. **Bounding Box Fallback** (last resort)
-   - Find nearest visible element to saved coordinates
-   - Distance threshold: 200px
+### Timeout Tuning is Project-Specific
+- 2s timeout adequate for static sites, insufficient for SPAs with code-splitting
+- TestRunner should expose per-step timeout configuration
+- Consider network speed detection (navigator.connection.effectiveType) for adaptive timeouts
 
-6. **Retry Logic** (dynamic content)
-   - Retry with 150ms delay if element not found
-   - Configurable timeout (default 2000ms)
+### Shadow DOM Resolution is Partial
+- resolveXPathInShadow() works for open shadowRoot only
+- Closed shadow roots require element.openOrClosedShadowRoot polyfill (not present)
+- Deeply nested shadow DOMs (3+ levels) untested
 
-**Helper Functions**:
-- `visible(el)` - Check computed style (display, visibility, opacity)
-- `textSimilarity(a, b)` - Fuzzy string matching with word set comparison
-- `getIframeChain(el)` - Build parent iframe path
-- `getDocumentFromIframeChain(chain)` - Resolve iframe document context
+### Iframe Replay Requires Same-Origin
+- Cross-origin iframes block contentWindow.document access
+- Replay silently fails for embedded third-party content (e.g., Stripe payment forms)
+- Consider using chrome.tabs.sendMessage to inject content script into iframe origin
 
-#### Action Execution (lines 1250-1446)
+### Error Messages are Critical for Debugging
+- findElementFromBundle returns { element, strategy, confidence } on success, { error, attemptedStrategies } on failure
+- TestRunner UI should display attempted strategies and confidence scores
+- Logs should include bundle snapshot for post-mortem analysis
 
-**`playAction(bundle, action)`** (200 lines) ⚠️ COMPLEX
-Executes recorded actions with framework-specific handling:
+### Performance Degrades with Many Steps
+- 500-step replay with 2s timeout per step = 1000s (16 minutes) maximum duration
+- Consider parallel execution for independent steps (e.g., multiple form fills)
+- Batch step results to reduce chrome.runtime.sendMessage overhead (currently per-step)
 
-**Action Types**:
-
-1. **Click Actions**
-   - Google Autocomplete: Inject page script via `window.postMessage`
-   - Select dropdowns: Focus + set value + dispatch change events
-   - Radio/Checkbox: Find option by aria-label, simulate mouse events
-   - Buttons/Links: Human-like click sequence (mouseover → mousedown → click)
-
-2. **Input Actions**
-   - Contenteditable: Set innerText + dispatch InputEvent
-   - React Inputs: Bypass React's controlled input via property setter:
-     ```typescript
-     const proto = HTMLInputElement.prototype;
-     const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
-     setter.call(element, value);
-     element.dispatchEvent(new InputEvent("input", { bubbles: true }));
-     ```
-   - Select2 Dropdowns: Find original `<select>`, set value, trigger events
-   - Textarea: Same as input with multi-line support
-
-3. **Enter Actions**
-   - Set value first (if provided)
-   - Dispatch KeyboardEvent sequence: keydown → keypress → keyup
-   - If button: Also trigger click
-
-**Helper Functions**:
-- `focusAndSetValue(element, value)` - React-safe value setter
-- `humanClick(element)` - Realistic mouse event sequence
-- `temporarilyShow(el)` - Unhide element, return restore function
-- `getOriginalSelect(el)` - Resolve Select2 spans to `<select>`
-
-### Page-Context Replay Script
-
-#### `src/contentScript/replay.ts` (152 lines)
-
-**Purpose**: Handle Google Autocomplete inside closed shadow roots
-
-**Architecture**:
-- Injected into page context (not content script context)
-- Listens for `window.postMessage({ type: "REPLAY_AUTOCOMPLETE" })`
-- Accesses exposed `__realShadowRoot` from interceptor
-
-**Actions**:
-
-1. **AUTOCOMPLETE_INPUT**
-   - Find input via XPath or shadowHost fallback
-   - Set value using property descriptor
-   - Dispatch input + change events
-
-2. **AUTOCOMPLETE_SELECTION**
-   - Query shadow root for `li[role='option']`
-   - Match by text content (case-insensitive)
-   - Simulate mouseover → mousedown → click sequence
-
-**Fallback Logic**:
-- Try bundle.xpath first
-- Fall back to bundle.hostXPath (shadow host)
-- Search for `__autocompleteInput` property on host
-
-## 7. Complexity Assessment
-
-**Complexity Rating**: 🔴 **HIGH** (9/10)
-
-### Why Complexity Exists
-
-1. **Element Volatility**: DOM structure changes between recording and replay (class names, IDs, dynamic content)
-2. **Framework Diversity**: Must handle React, Vue, Angular, jQuery, vanilla JS differently
-3. **Event System Complexity**: Trusted vs. synthetic events, bubbling, capturing, composed paths
-4. **Shadow DOM Barriers**: Closed shadow roots block standard DOM queries
-5. **Controlled Inputs**: React prevents direct value changes, requires property descriptor hacks
-6. **Timing Issues**: Elements not yet loaded, animations in progress, lazy rendering
-7. **Locator Fragility**: Single strategy failure requires multi-tier fallback logic
-
-### Risks
-
-1. **Replay Brittleness**: Minor DOM changes break element finding
-2. **Performance Degradation**: Multiple fallback strategies slow down execution
-3. **False Positives**: Fuzzy text matching may click wrong elements
-4. **React Version Issues**: Property descriptor approach may break with React updates
-5. **Shadow DOM Breakage**: Monkey-patching vulnerable to browser changes
-6. **Timeout Tuning**: Hard-coded 2000ms may be too short for slow pages
-7. **Concurrency Issues**: Parallel step execution could interfere with page state
-
-### Refactoring Implications
-
-**Immediate Needs** (Phase 1):
-1. Extract element finding into `ElementFinderService`:
-   - Interface: `ILocatorStrategy` with `find(bundle): Element | null`
-   - Implementations: XPathStrategy, IDStrategy, AriaStrategy, FuzzyTextStrategy
-   - Configurable priority and timeout per strategy
-
-2. Split action execution by type:
-   - `ClickExecutor` - Mouse interactions
-   - `InputExecutor` - Text input handling
-   - `SelectExecutor` - Dropdown selection
-   - `KeyboardExecutor` - Enter, Tab, Arrow keys
-
-3. Separate framework adapters:
-   - `ReactInputAdapter` - Handle controlled inputs
-   - `Select2Adapter` - Custom dropdown logic
-   - `GoogleAutocompleteAdapter` - Shadow DOM handling
-
-**Long-Term Vision** (Phase 2):
-4. Add smart wait strategies:
-   - Wait for element visibility
-   - Wait for animations to complete
-   - Wait for AJAX requests to finish
-   - Configurable wait conditions
-
-5. Improve error recovery:
-   - Screenshot on failure
-   - Retry with alternative locators
-   - Graceful degradation (skip vs. fail)
-
-6. Add execution modes:
-   - Fast mode (no delays)
-   - Realistic mode (human-like timing)
-   - Debug mode (pause between steps)
-
-**Complexity Reduction Target**: Medium (6/10) after refactoring
+### Testing Requires Live DOM State
+- Cannot unit test findElementFromBundle without real DOM
+- Mock fixtures for XPath, querySelector insufficient (doesn't test integration)
+- Recommend recording test cases on stable sandbox sites for regression tests
