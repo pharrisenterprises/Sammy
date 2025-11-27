@@ -272,6 +272,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     sendResponse({ success: false, error: err.message });
     return false;
   }
+  
+  // CRITICAL: Keep message channel open for async operations
+  return true;
 });
 
 chrome.action.onClicked.addListener(() => {
