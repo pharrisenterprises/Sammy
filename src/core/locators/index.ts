@@ -1,489 +1,364 @@
 /**
- * @fileoverview Barrel export for all locator-related types and utilities
+ * Locator System - Central export barrel
  * @module core/locators
  * @version 1.0.0
  * 
- * This module re-exports all locator types, strategies, bundle building,
- * validation, and highlighting utilities.
+ * Provides a unified entry point for the 9-tier locator fallback system.
  * 
- * 9-TIER FALLBACK STRATEGY (in priority order):
- * 1. XPath (100% confidence)
- * 2. ID (90%)
- * 3. Name (80%)
- * 4. Aria (75%)
- * 5. Placeholder (70%)
- * 6. Data Attributes (65%)
- * 7. Fuzzy Text (50%)
- * 8. Bounding Box (30%)
- * 9. CSS Selector (60%)
+ * Main Components:
+ * - LocatorResolver: Orchestrates element location during replay
+ * - LocatorGenerator: Creates LocatorBundles during recording
+ * - StrategyRegistry: Manages locator strategies
+ * - Individual Strategies: Placeholder, DataAttribute, FuzzyText, BoundingBox, CssSelector, FormLabel
  * 
  * @example
  * ```typescript
- * // Import location utilities
- * import { locateElement, locateElementWithRetry } from '@/core/locators';
+ * import {
+ *   LocatorResolver,
+ *   LocatorGenerator,
+ *   getStrategyRegistry,
+ * } from '@/core/locators';
  * 
- * // Import bundle building
- * import { buildBundle, buildBundleFromEvent } from '@/core/locators';
+ * // Recording
+ * const generator = new LocatorGenerator();
+ * const bundle = generator.generate(element);
  * 
- * // Import validation
- * import { validateBundle, verifyElementMatch } from '@/core/locators';
- * 
- * // Import highlighting
- * import { HighlightManager, highlightRecording } from '@/core/locators';
+ * // Replay
+ * const resolver = new LocatorResolver();
+ * const result = await resolver.resolve(bundle, document);
  * ```
- * 
- * @see PHASE_4_SPECIFICATIONS.md for locator specifications
- * @see locator-strategy_breakdown.md for strategy details
  */
 
 // ============================================================================
-// LOCATOR UTILITIES
+// INTERFACES & TYPES
+// ============================================================================
+
+export type {
+  ILocatorStrategy,
+  LocatorResult,
+  LocatorContext,
+} from './strategies/ILocatorStrategy';
+
+// ============================================================================
+// STRATEGY REGISTRY
 // ============================================================================
 
 export {
-  // Types
-  type LocateResult,
+  StrategyRegistry,
+  getStrategyRegistry,
+  createStrategyRegistry,
+  resetStrategyRegistry,
+  DEFAULT_STRATEGY_ORDER,
+  type StrategyName,
+  type RegistryEntry,
+  type RegistryConfig,
+  type StrategyFilter,
+} from './StrategyRegistry';
+
+// ============================================================================
+// LOCATOR RESOLVER (Replay)
+// ============================================================================
+
+export {
+  LocatorResolver,
+  getLocatorResolver,
+  createLocatorResolver,
+  resetLocatorResolver,
+  resolveElement,
+  resolveElementSync,
+  delay,
+  createResolverConfig,
+  meetsConfidenceThreshold,
+  compareBestResult,
+  DEFAULT_TIMEOUT_MS,
+  DEFAULT_RETRY_INTERVAL_MS,
+  HIGH_CONFIDENCE_THRESHOLD,
+  MAX_RETRY_ATTEMPTS,
+  type ResolverConfig,
   type StrategyAttempt,
-  type StrategyFunction,
-  type StrategyDefinition,
-  
-  // Strategy Registry
-  STRATEGIES,
-  getAvailableStrategies,
-  getStrategyByName,
-  
-  // Individual Strategy Functions
-  locateByXPath,
-  locateById,
-  locateByName,
-  locateByAria,
-  locateByPlaceholder,
-  locateByDataAttrs,
-  locateByText,
-  locateByBounding,
-  locateByCss,
-  
-  // Main Location Functions
-  locateElement,
-  locateElementWithRetry,
-  
-  // Utility Functions
-  escapeSelector,
-  calculateTextSimilarity,
-  isPointInBoundingBox,
-  distanceToBoundingCenter,
-  buildXPathFromElement,
-  buildCssSelectorFromElement,
-  extractBundleFromElement,
-  verifyElementMatchesBundle,
-  scoreElementMatch
-} from './locator-utils';
+  type ResolutionResult,
+  type ResolutionProgressCallback,
+} from './LocatorResolver';
 
 // ============================================================================
-// STRATEGIES
+// LOCATOR GENERATOR (Recording)
 // ============================================================================
 
 export {
-  // Types
-  type StrategyContext,
-  type StrategyOptions,
-  type FullLocateResult,
-  type InteractionOptions,
-  
-  // Constants
-  DEFAULT_STRATEGY_OPTIONS,
-  DEFAULT_INTERACTION_OPTIONS,
-  
-  // Main Strategy Executor
-  executeStrategy,
-  
-  // Element Interactions
-  performClick,
-  performInput,
-  performEnter,
-  
-  // Highlighting (from strategies)
-  highlightElement,
-  createHighlightOverlay,
-  removeHighlightOverlay,
-  
-  // Utilities
-  waitForElementStable,
+  LocatorGenerator,
+  getLocatorGenerator,
+  createLocatorGenerator,
+  resetLocatorGenerator,
+  generateBundle,
+  validateBundle,
+  getVisibleText,
+  shouldIgnoreDataAttr,
+  extractDataAttributes,
+  getIframeChain,
+  getShadowHostChain,
+  generateXPath,
+  generateCssSelector,
+  getBoundingBox,
+  MAX_TEXT_LENGTH,
+  MAX_CLASSES,
+  MAX_DATA_ATTRS,
+  IGNORED_DATA_ATTRS,
+  IGNORED_DATA_PREFIXES,
+  NO_TEXT_TAGS,
+  type GeneratorConfig,
+  type IframeInfo,
+  type ShadowHostInfo,
+  type ValidationResult,
+} from './LocatorGenerator';
+
+// ============================================================================
+// STRATEGIES - Tier 5: Placeholder (70% confidence)
+// ============================================================================
+
+export {
+  PlaceholderStrategy,
+  getPlaceholderStrategy,
+  createPlaceholderStrategy,
+  normalizePlaceholder,
+  buildPlaceholderSelector,
+  placeholderSimilarity,
+  supportsPlaceholder,
+  STRATEGY_NAME as PLACEHOLDER_STRATEGY_NAME,
+  STRATEGY_PRIORITY as PLACEHOLDER_STRATEGY_PRIORITY,
+  BASE_CONFIDENCE as PLACEHOLDER_BASE_CONFIDENCE,
+} from './strategies/PlaceholderStrategy';
+
+// ============================================================================
+// STRATEGIES - Tier 6: Data Attribute (65% confidence)
+// ============================================================================
+
+export {
+  DataAttributeStrategy,
+  getDataAttributeStrategy,
+  createDataAttributeStrategy,
+  isTestingAttribute,
+  shouldIgnoreAttribute,
+  getAttributePriority,
+  scanDataAttributes,
+  STRATEGY_NAME as DATA_ATTR_STRATEGY_NAME,
+  STRATEGY_PRIORITY as DATA_ATTR_STRATEGY_PRIORITY,
+  BASE_CONFIDENCE as DATA_ATTR_BASE_CONFIDENCE,
+  TESTING_DATA_ATTRIBUTES,
+  IGNORED_DATA_ATTRIBUTES,
+} from './strategies/DataAttributeStrategy';
+
+// ============================================================================
+// STRATEGIES - Tier 7: Fuzzy Text (40% confidence)
+// ============================================================================
+
+export {
+  FuzzyTextStrategy,
+  getFuzzyTextStrategy,
+  createFuzzyTextStrategy,
+  normalizeText,
+  extractWords,
+  diceCoefficient,
+  STRATEGY_NAME as FUZZY_TEXT_STRATEGY_NAME,
+  STRATEGY_PRIORITY as FUZZY_TEXT_STRATEGY_PRIORITY,
+  BASE_CONFIDENCE as FUZZY_TEXT_BASE_CONFIDENCE,
+  SIMILARITY_THRESHOLD as FUZZY_TEXT_SIMILARITY_THRESHOLD,
+} from './strategies/FuzzyTextStrategy';
+
+// ============================================================================
+// STRATEGIES - Tier 8: Bounding Box (35% confidence)
+// ============================================================================
+
+export {
+  BoundingBoxStrategy,
+  getBoundingBoxStrategy,
+  createBoundingBoxStrategy,
+  euclideanDistance,
+  getCenter,
+  boxDistance,
+  sizesMatch,
   isElementVisible,
   isElementInteractable,
-  getElementVisibleText,
-  getElementDocument,
-  getFullXPath
-} from './strategies';
+  findNearbyElements,
+  spatialSearch,
+  STRATEGY_NAME as BBOX_STRATEGY_NAME,
+  STRATEGY_PRIORITY as BBOX_STRATEGY_PRIORITY,
+  BASE_CONFIDENCE as BBOX_BASE_CONFIDENCE,
+  MAX_DISTANCE_THRESHOLD,
+  type BoundingBox,
+  type SpatialCandidate,
+  type SpatialSearchResult,
+} from './strategies/BoundingBoxStrategy';
 
 // ============================================================================
-// BUNDLE BUILDER
-// ============================================================================
-
-export {
-  // Types
-  type BundleBuildOptions,
-  type BundleBuildContext,
-  type BundleBuildResult,
-  
-  // Constants
-  DEFAULT_BUILD_OPTIONS,
-  
-  // Build Functions
-  buildBundle,
-  buildBundleFromEvent,
-  buildBundleFromPoint,
-  
-  // Context Detection
-  getBuildContext,
-  isInIframe,
-  isInShadowDom,
-  
-  // XPath Building
-  buildXPath,
-  buildOptimizedXPath,
-  
-  // CSS Selector Building
-  buildCssSelector,
-  buildOptimizedCssSelector,
-  
-  // Bundle Manipulation
-  enhanceBundle,
-  mergeBundles,
-  validateBundle as validateBundleStructure
-} from './bundle-builder';
-
-// ============================================================================
-// VALIDATOR
+// STRATEGIES - Supplementary: CSS Selector (60% confidence)
 // ============================================================================
 
 export {
-  // Types
-  type ValidationSeverity,
-  type ValidationIssue,
-  type ValidationResult,
-  type ValidationStats,
-  type MatchResult,
-  type PropertyMatch,
-  type DiagnosticReport,
-  type PageContext,
-  
-  // Constants
-  VALIDATION_CODES,
-  
-  // Validation Functions
-  validateBundle,
-  verifyElementMatch,
-  findMatchingElements,
-  
-  // Diagnostics
-  generateDiagnosticReport,
-  formatDiagnosticReport,
-  
-  // Utilities
-  isValidBundle,
-  getQualityLevel
-} from './validator';
+  CssSelectorStrategy,
+  getCssSelectorStrategy,
+  createCssSelectorStrategy,
+  shouldIgnoreClass,
+  filterStableClasses,
+  escapeCssValue,
+  buildClassSelector,
+  buildAttributeSelector,
+  buildCombinedSelector,
+  calculateSpecificity,
+  testSelectorUniqueness,
+  generateSelectorVariants,
+  selectBestSelector,
+  STRATEGY_NAME as CSS_STRATEGY_NAME,
+  STRATEGY_PRIORITY as CSS_STRATEGY_PRIORITY,
+  BASE_CONFIDENCE as CSS_BASE_CONFIDENCE,
+  IGNORED_CLASS_PATTERNS,
+  SAFE_ATTRIBUTES,
+  type GeneratedSelector,
+  type SelectorOptions,
+} from './strategies/CssSelectorStrategy';
 
 // ============================================================================
-// HIGHLIGHTS
+// STRATEGIES - Supplementary: Form Label (72% confidence)
 // ============================================================================
 
 export {
-  // Types
-  type HighlightStyle,
-  type HighlightConfig,
-  type HighlightInstance,
-  type HighlightManagerState,
-  
-  // Constants
-  STYLE_PRESETS,
-  DEFAULT_HIGHLIGHT_CONFIG,
-  
-  // Highlight Manager Class
-  HighlightManager,
-  
-  // Standalone Functions
-  quickHighlight,
-  highlightSuccess,
-  highlightError,
-  highlightRecording,
-  highlightReplay,
-  clearAllHighlights,
-  removeHighlight,
-  highlightBoundingBox,
-  flashHighlight,
-  
-  // Manager Singleton
-  getDefaultManager,
-  resetDefaultManager,
-  
-  // Styles
-  removeInjectedStyles,
-  
-  // Scroll Integration
-  scrollAndHighlight,
-  ensureVisibleAndHighlight
-} from './highlights';
+  FormLabelStrategy,
+  getFormLabelStrategy,
+  createFormLabelStrategy,
+  normalizeText as normalizeFormLabelText,
+  textSimilarity,
+  isLabelableElement,
+  getExplicitLabel,
+  getImplicitLabel,
+  getAriaLabelElement,
+  getProximityLabel,
+  getLabelAssociations,
+  getInputLabelText,
+  findLabeledInputs,
+  findInputsByLabelText,
+  STRATEGY_NAME as FORM_LABEL_STRATEGY_NAME,
+  STRATEGY_PRIORITY as FORM_LABEL_STRATEGY_PRIORITY,
+  BASE_CONFIDENCE as FORM_LABEL_BASE_CONFIDENCE,
+  LABELABLE_ELEMENTS,
+  LABELED_INPUT_TYPES,
+  type LabelAssociationType,
+  type LabelAssociation,
+  type LabeledInputCandidate,
+} from './strategies/FormLabelStrategy';
 
 // ============================================================================
-// CONVENIENCE RE-EXPORTS FROM TYPES
-// ============================================================================
-
-// Re-export key types from core/types for convenience
-export type {
-  LocatorBundle,
-  BoundingBox,
-  LocatorTier
-} from '../types';
-
-export {
-  LOCATOR_TIERS,
-  ELEMENT_TIMEOUT_MS,
-  RETRY_INTERVAL_MS,
-  BOUNDING_BOX_RADIUS_PX,
-  FUZZY_TEXT_THRESHOLD,
-  createEmptyBundle,
-  createBundle,
-  createBoundingBox,
-  hasXPath,
-  hasId,
-  hasName,
-  hasAria,
-  hasPlaceholder,
-  hasDataAttrs,
-  hasText,
-  hasBounding,
-  isInIframe as bundleIsInIframe,
-  isInShadowDom as bundleIsInShadowDom,
-  getBoundingCenter
-} from '../types';
-
-// ============================================================================
-// COMPOSITE FUNCTIONS
+// STRATEGY COLLECTION HELPERS
 // ============================================================================
 
 /**
- * Complete element location workflow
- * 
- * Builds bundle, validates, and locates element with full diagnostics.
- * 
- * @param element - Element to locate (for bundle building)
- * @param doc - Document to search in
- * @returns Location result with diagnostics
- * 
- * @example
- * ```typescript
- * const result = await locateWithDiagnostics(recordedElement, document);
- * 
- * if (!result.found) {
- *   console.log('Diagnostic report:', result.diagnostics);
- * }
- * ```
+ * Strategy names in tier order
  */
-export async function locateWithDiagnostics(
-  bundle: import('../types').LocatorBundle,
-  doc: Document = document
-): Promise<{
-  result: import('./locator-utils').LocateResult;
-  validation: import('./validator').ValidationResult;
-  diagnostics: import('./validator').DiagnosticReport | null;
-}> {
-  const { validateBundle: validate } = await import('./validator');
-  const { locateElementWithRetry } = await import('./locator-utils');
-  const { generateDiagnosticReport } = await import('./validator');
+export const STRATEGY_TIERS = {
+  // Not yet implemented
+  TIER_1_XPATH: 'xpath',
+  TIER_2_ID: 'id',
+  TIER_3_NAME: 'name',
+  TIER_4_ARIA: 'aria-label',
+  // Implemented
+  TIER_5_PLACEHOLDER: 'placeholder',
+  TIER_6_DATA_ATTR: 'data-attribute',
+  TIER_7_FUZZY_TEXT: 'fuzzy-text',
+  TIER_8_BOUNDING_BOX: 'bounding-box',
+  SUPPLEMENTARY_CSS: 'css-selector',
+  SUPPLEMENTARY_FORM_LABEL: 'form-label',
+} as const;
 
-  const validation = validate(bundle);
-  const result = await locateElementWithRetry(bundle, doc);
+/**
+ * Strategy confidence levels
+ */
+export const STRATEGY_CONFIDENCE = {
+  XPATH: 1.0,
+  ID: 0.9,
+  NAME: 0.8,
+  ARIA_LABEL: 0.75,
+  PLACEHOLDER: 0.7,
+  DATA_ATTRIBUTE: 0.65,
+  CSS_SELECTOR: 0.6,
+  FORM_LABEL: 0.72,
+  FUZZY_TEXT: 0.4,
+  BOUNDING_BOX: 0.35,
+} as const;
 
-  let diagnostics: import('./validator').DiagnosticReport | null = null;
+// ============================================================================
+// CONVENIENCE FACTORY
+// ============================================================================
+
+/**
+ * Creates a fully configured locator system
+ * 
+ * @returns Object with resolver, generator, and registry
+ */
+export function createLocatorSystem() {
+  const {
+    createStrategyRegistry,
+    createLocatorResolver,
+    createLocatorGenerator,
+  } = require('./') as {
+    createStrategyRegistry: typeof import('./StrategyRegistry').createStrategyRegistry;
+    createLocatorResolver: typeof import('./LocatorResolver').createLocatorResolver;
+    createLocatorGenerator: typeof import('./LocatorGenerator').createLocatorGenerator;
+  };
   
-  if (!result.found) {
-    diagnostics = generateDiagnosticReport(bundle, doc);
-  }
-
-  return { result, validation, diagnostics };
+  const registry = createStrategyRegistry();
+  const resolver = createLocatorResolver({ registry });
+  const generator = createLocatorGenerator({ registry });
+  
+  return { resolver, generator, registry };
 }
 
 /**
- * Record and highlight an element interaction
+ * Gets the global locator system singletons
  * 
- * Builds bundle from element and highlights it for recording feedback.
- * 
- * @param element - Element being recorded
- * @param eventType - Type of event being recorded
- * @returns Built bundle and highlight ID
+ * @returns Object with resolver, generator, and registry
  */
-export function recordElementInteraction(
-  element: Element,
-  eventType: string
-): {
-  bundle: import('../types').LocatorBundle;
-  highlightId: string;
-  qualityScore: number;
-} {
-  const { buildBundle: build } = require('./bundle-builder');
-  const { highlightRecording: highlight } = require('./highlights');
-
-  const buildResult = build(element);
-  const highlightId = highlight(element, `Recording: ${eventType}`);
-
+export function getLocatorSystem() {
+  const {
+    getStrategyRegistry,
+    getLocatorResolver,
+    getLocatorGenerator,
+  } = require('./') as {
+    getStrategyRegistry: typeof import('./StrategyRegistry').getStrategyRegistry;
+    getLocatorResolver: typeof import('./LocatorResolver').getLocatorResolver;
+    getLocatorGenerator: typeof import('./LocatorGenerator').getLocatorGenerator;
+  };
+  
   return {
-    bundle: buildResult.bundle,
-    highlightId,
-    qualityScore: buildResult.qualityScore
+    resolver: getLocatorResolver(),
+    generator: getLocatorGenerator(),
+    registry: getStrategyRegistry(),
   };
 }
 
 /**
- * Replay step with visual feedback
- * 
- * Locates element, highlights it, and returns result.
- * 
- * @param bundle - Locator bundle from recorded step
- * @param stepNumber - Step number for display
- * @param doc - Document to search in
- * @returns Location result with highlight ID
+ * Resets all locator system singletons (for testing)
  */
-export async function replayStepWithHighlight(
-  bundle: import('../types').LocatorBundle,
-  stepNumber: number,
-  doc: Document = document
-): Promise<{
-  found: boolean;
-  element: Element | null;
-  highlightId: string | null;
-  strategy: string | null;
-  confidence: number;
-}> {
-  const { locateElementWithRetry } = await import('./locator-utils');
-  const { highlightReplay } = await import('./highlights');
-
-  const result = await locateElementWithRetry(bundle, doc);
-
-  let highlightId: string | null = null;
-
-  if (result.found && result.element) {
-    highlightId = highlightReplay(result.element, stepNumber);
-  } else {
-    // Highlight expected location if available
-    if (bundle.bounding) {
-      const { highlightBoundingBox } = await import('./highlights');
-      highlightId = highlightBoundingBox(bundle.bounding, {
-        style: 'error',
-        showTooltip: true,
-        tooltipText: `Step ${stepNumber}: Element not found`
-      });
-    }
-  }
-
-  return {
-    found: result.found,
-    element: result.element,
-    highlightId,
-    strategy: result.strategy,
-    confidence: result.confidence
+export function resetLocatorSystem(): void {
+  const {
+    resetStrategyRegistry,
+    resetLocatorResolver,
+    resetLocatorGenerator,
+  } = require('./') as {
+    resetStrategyRegistry: typeof import('./StrategyRegistry').resetStrategyRegistry;
+    resetLocatorResolver: typeof import('./LocatorResolver').resetLocatorResolver;
+    resetLocatorGenerator: typeof import('./LocatorGenerator').resetLocatorGenerator;
   };
-}
-
-/**
- * Validate and score a bundle for reliability
- * 
- * Quick assessment of how reliable a bundle is for element location.
- * 
- * @param bundle - Bundle to assess
- * @returns Assessment result
- */
-export function assessBundleReliability(
-  bundle: import('../types').LocatorBundle
-): {
-  score: number;
-  level: 'excellent' | 'good' | 'fair' | 'poor';
-  issues: number;
-  recommendations: string[];
-} {
-  const { validateBundle: validate, getQualityLevel } = require('./validator');
   
-  const validation = validate(bundle);
-  const { level } = getQualityLevel(validation.qualityScore);
-  
-  const recommendations: string[] = [];
-  
-  for (const issue of validation.issues) {
-    if (issue.suggestion) {
-      recommendations.push(issue.suggestion);
-    }
-  }
-
-  return {
-    score: validation.qualityScore,
-    level,
-    issues: validation.issues.length,
-    recommendations: [...new Set(recommendations)]
-  };
+  resetLocatorResolver();
+  resetLocatorGenerator();
+  resetStrategyRegistry();
 }
 
 // ============================================================================
-// DOCUMENTATION
+// LEGACY EXPORTS (OLD ARCHITECTURE - TO BE REFACTORED)
 // ============================================================================
 
-/**
- * LOCATOR LAYER ARCHITECTURE
- * 
- * The locator layer provides element location capabilities:
- * 
- * 1. Locator Utils (locator-utils.ts)
- *    - Individual strategy implementations
- *    - Main location function with fallback
- *    - Text similarity and position utilities
- * 
- * 2. Strategies (strategies.ts)
- *    - High-level strategy orchestration
- *    - Iframe and shadow DOM support
- *    - Element interaction helpers
- * 
- * 3. Bundle Builder (bundle-builder.ts)
- *    - Build LocatorBundle from elements
- *    - Context detection (iframe, shadow DOM)
- *    - XPath and CSS selector generation
- * 
- * 4. Validator (validator.ts)
- *    - Bundle integrity validation
- *    - Element-bundle matching
- *    - Diagnostic reporting
- * 
- * 5. Highlights (highlights.ts)
- *    - Visual element highlighting
- *    - Recording and replay feedback
- *    - Animation effects
- * 
- * LOCATORBUNDLE PROPERTIES (14 total):
- * 1. tag - Element tag name
- * 2. id - Element ID
- * 3. name - Form element name
- * 4. placeholder - Input placeholder
- * 5. aria - Aria-label
- * 6. text - Text content
- * 7. dataAttrs - Data-* attributes
- * 8. css - CSS selector
- * 9. xpath - XPath expression
- * 10. classes - CSS classes array
- * 11. pageUrl - Page URL
- * 12. bounding - BoundingBox coordinates
- * 13. iframeChain - Iframe indices
- * 14. shadowHosts - Shadow host selectors
- * 
- * USAGE RECOMMENDATIONS:
- * 
- * - For recording: Use buildBundle() to capture element info
- * - For replay: Use executeStrategy() with full fallback
- * - For validation: Use validateBundle() before storing
- * - For debugging: Use generateDiagnosticReport()
- * - For feedback: Use HighlightManager or convenience functions
- * 
- * CRITICAL CONSTANTS:
- * - ELEMENT_TIMEOUT_MS: 2000 (default retry timeout)
- * - RETRY_INTERVAL_MS: 150 (retry check interval)
- * - BOUNDING_BOX_RADIUS_PX: 200 (position match radius)
- * - FUZZY_TEXT_THRESHOLD: 0.4 (40% text similarity minimum)
- */
+// Re-export old locator utilities for backward compatibility
+export * from './locator-utils';
+export * from './strategies';
+export * from './bundle-builder';
+export * from './validator';
+export * from './highlights';
