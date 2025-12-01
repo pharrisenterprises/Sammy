@@ -1,583 +1,668 @@
 /**
- * @fileoverview Barrel export for all replay-related types and utilities
+ * Replay System - Central export barrel
  * @module core/replay
  * @version 1.0.0
  * 
- * This module re-exports all replay engine types, the Player class,
- * step executor, and utilities for test playback.
+ * Provides a unified entry point for the replay layer.
  * 
- * REPLAY WORKFLOW:
- * 1. Create Player with Steps
- * 2. Optionally set CSV data for data-driven testing
- * 3. Call play() to execute all steps
- * 4. Handle callbacks for progress/errors
- * 5. Get results and generate TestRun
- * 
- * STEP EVENT EXECUTION:
- * - 'open' - Verify/navigate to URL
- * - 'click' - Locate and click element
- * - 'input' - Locate element, inject value, type
- * - 'enter' - Locate element, press Enter
- * 
- * TESTRUN STATUS (set based on results):
- * - 'pending' - Before replay starts
- * - 'running' - During replay
- * - 'passed' - All steps succeeded
- * - 'failed' - Any step failed
- * - 'stopped' - User stopped replay
+ * Main Components:
+ * - ReplayController: Coordinates replay state and execution
+ * - ActionExecutor: Executes individual step actions
+ * - WaitStrategy: Element waiting and polling strategies
  * 
  * @example
  * ```typescript
- * // Simple replay
- * import { Player, runReplay } from '@/core/replay';
+ * import {
+ *   ReplayController,
+ *   createActionExecutor,
+ *   createWaitStrategy,
+ *   visible,
+ *   enabled,
+ * } from '@/core/replay';
  * 
- * // Detailed execution
- * import { StepExecutor, executeStep } from '@/core/replay';
- * 
- * // Complete workflow
- * import { replayProject, createTestRunFromReplay } from '@/core/replay';
- * ```
- * 
- * @see PHASE_4_SPECIFICATIONS.md for replay specifications
- * @see replay-engine_breakdown.md for engine details
- */
-
-// ============================================================================
-// PLAYER
-// ============================================================================
-
-export {
-  // Types
-  type ReplayState,
-  type ReplayConfig,
-  type StepResult,
-  type ReplayProgress,
-  type CsvInjectionData,
-  type ReplayCallbacks,
-  
-  // Constants
-  DEFAULT_REPLAY_CONFIG,
-  
-  // Player Class
-  Player,
-  
-  // Factory Functions
-  createPlayer,
-  runReplay,
-  
-  // Utilities
-  generateLogFromResults
-} from './player';
-
-// ============================================================================
-// STEP EXECUTOR
-// ============================================================================
-
-export {
-  // Types
-  type StepExecutionOptions,
-  type StepExecutionContext,
-  type StepExecutionResult,
-  type ExecutionPhase,
-  type StepExecutionError,
-  type StepErrorCode,
-  type PreExecuteHook,
-  type PostExecuteHook,
-  
-  // Constants
-  DEFAULT_EXECUTION_OPTIONS,
-  ERROR_MESSAGES,
-  
-  // StepExecutor Class
-  StepExecutor,
-  
-  // Standalone Functions
-  executeStep,
-  executeSteps,
-  validateStep,
-  describeStep,
-  getErrorSummary,
-  createExecutionReport
-} from './step-executor';
-
-// ============================================================================
-// CONVENIENCE RE-EXPORTS
-// ============================================================================
-
-// Re-export types for convenience
-export type { Step, StepEvent, TestRun, TestRunStatus, Field } from '../types';
-
-// Re-export locator functions used during replay
-export {
-  executeStrategy,
-  performClick,
-  performInput,
-  performEnter,
-  highlightReplay,
-  highlightSuccess,
-  highlightError
-} from '../locators';
-
-// ============================================================================
-// COMPOSITE FUNCTIONS
-// ============================================================================
-
-/**
- * Replay a project's steps
- * 
- * Complete workflow for replaying a project with optional CSV data.
- * 
- * @param steps - Steps to replay
- * @param options - Replay and execution options
- * @returns Replay result with TestRun data
- * 
- * @example
- * ```typescript
- * const result = await replayProject(project.steps, {
- *   csvData: project.csvData,
- *   fields: project.fields,
- *   rowIndex: 0,
- *   onProgress: (p) => console.log(`${p.completedSteps}/${p.totalSteps}`)
+ * // Create replay system
+ * const controller = new ReplayController({
+ *   stepExecutor: createStepExecutor(),
+ *   onProgress: (p) => console.log(`${p.percentage}%`),
  * });
  * 
- * if (result.passed) {
- *   console.log('All tests passed!');
- * }
+ * // Run replay
+ * const result = await controller.start(steps);
  * ```
  */
-export async function replayProject(
-  steps: import('../types').Step[],
-  options: {
-    config?: import('./player').ReplayConfig;
-    csvData?: string[][] | null;
-    fields?: import('../types').Field[];
-    rowIndex?: number;
-    onProgress?: (progress: import('./player').ReplayProgress) => void;
-    onStepComplete?: (result: import('./player').StepResult, index: number) => void;
-    onError?: (error: Error) => void;
-  } = {}
-): Promise<{
-  passed: boolean;
-  results: import('./player').StepResult[];
-  duration: number;
-  logs: string;
-  status: import('../types').TestRunStatus;
-}> {
-  const { Player, generateLogFromResults } = require('./player');
 
-  const player = new Player(steps, options.config || {}, {
-    onProgress: options.onProgress,
-    onStepComplete: options.onStepComplete,
-    onError: options.onError
-  });
+// ============================================================================
+// REPLAY CONTROLLER
+// ============================================================================
 
-  // Set CSV data if provided
-  if (options.csvData && options.fields && options.rowIndex !== undefined) {
-    const headers = options.csvData[0] || [];
-    const dataRows = options.csvData.slice(1);
-    const rowData: Record<string, string> = {};
+export {
+  // Main class
+  ReplayController,
+  
+  // Factory function
+  createReplayController,
+  
+  // Constants
+  DEFAULT_REPLAY_OPTIONS,
+  STATE_TRANSITIONS,
+  DEFAULT_STEP_TIMEOUT,
+  MAX_RETRY_ATTEMPTS,
+  RETRY_BACKOFF_MULTIPLIER,
+  
+  // Types
+  type ReplayControllerConfig,
+  type StepExecutor,
+  type StepExecutionContext,
+  type StepExecutionResult,
+  type ReplayProgress,
+  type Breakpoint,
+} from './ReplayController';
+
+// ============================================================================
+// ACTION EXECUTOR
+// ============================================================================
+
+export {
+  // Main class
+  ActionExecutor,
+  
+  // Factory function
+  createActionExecutor,
+  
+  // Constants
+  DEFAULT_ACTION_TIMEOUT,
+  DEFAULT_POLL_INTERVAL,
+  DEFAULT_TYPING_DELAY,
+  MAX_WAIT_TIME,
+  ACTION_TYPES,
+  
+  // Types
+  type ActionExecutorConfig,
+  type ScreenshotCapturer,
+  type LocatorResolver,
+  type ActionContext,
+  type ActionResult,
+  type ActionHandler,
+  type WaitCondition as ActionWaitCondition,
+  type ElementState,
+} from './ActionExecutor';
+
+// ============================================================================
+// WAIT STRATEGY
+// ============================================================================
+
+export {
+  // Main class
+  WaitStrategy,
+  
+  // Factory function
+  createWaitStrategy,
+  
+  // Constants
+  DEFAULT_WAIT_TIMEOUT,
+  DEFAULT_POLL_INTERVAL as WAIT_POLL_INTERVAL,
+  DEFAULT_STABILITY_THRESHOLD,
+  DEFAULT_STABILITY_CHECKS,
+  MIN_POLL_INTERVAL,
+  MAX_POLL_INTERVAL,
+  WAIT_CONDITIONS,
+  
+  // Types
+  type WaitConditionType,
+  type WaitCondition,
+  type WaitOptions,
+  type WaitResult,
+  
+  // Condition builders
+  attached,
+  detached,
+  visible,
+  hidden,
+  enabled,
+  disabled,
+  stable,
+  hasText,
+  hasValue,
+  hasAttribute,
+  satisfies,
+  not,
+} from './WaitStrategy';
+
+// ============================================================================
+// CONVENIENCE FACTORIES
+// ============================================================================
+
+/**
+ * Creates a complete replay system with all components wired together
+ * 
+ * @param config - Configuration options
+ * @returns Configured replay system components
+ * 
+ * @example
+ * ```typescript
+ * const { controller, executor, waitStrategy } = createReplaySystem({
+ *   onProgress: (p) => updateUI(p),
+ *   actionTimeout: 10000,
+ * });
+ * 
+ * const result = await controller.start(steps);
+ * ```
+ */
+export function createReplaySystem(config?: {
+  /** Replay controller config */
+  controllerConfig?: import('./ReplayController').ReplayControllerConfig;
+  /** Action executor config */
+  executorConfig?: import('./ActionExecutor').ActionExecutorConfig;
+  /** Wait strategy options */
+  waitOptions?: import('./WaitStrategy').WaitOptions;
+  /** Progress callback */
+  onProgress?: (progress: import('./ReplayController').ReplayProgress) => void;
+  /** Completion callback */
+  onComplete?: (result: import('../types/replay').ReplayResult) => void;
+  /** Error callback */
+  onError?: (error: Error, step?: import('../types/step').RecordedStep) => void;
+}): {
+  controller: import('./ReplayController').ReplayController;
+  executor: import('./ActionExecutor').ActionExecutor;
+  waitStrategy: import('./WaitStrategy').WaitStrategy;
+} {
+  // Import from the modules
+  const WaitStrategyModule = require('./WaitStrategy');
+  const ActionExecutorModule = require('./ActionExecutor');
+  const ReplayControllerModule = require('./ReplayController');
+  
+  // Create wait strategy
+  const waitStrategy = WaitStrategyModule.createWaitStrategy(config?.waitOptions);
+  
+  // Create action executor
+  const executor = ActionExecutorModule.createActionExecutor(config?.executorConfig);
+  
+  // Create step executor that uses action executor
+  const stepExecutor: import('./ReplayController').StepExecutor = async (step, context) => {
+    const result = await executor.execute(step, {
+      step,
+      timeout: context.timeout,
+      abortSignal: context.abortSignal,
+      previousResult: context.previousResult ? {
+        success: context.previousResult.status === 'passed',
+        duration: context.previousResult.duration,
+        elementFound: context.previousResult.elementFound ?? false,
+      } : undefined,
+      metadata: context.sessionMetadata,
+    });
     
-    const row = dataRows[options.rowIndex];
-    if (row) {
-      headers.forEach((header, i) => {
-        rowData[header] = row[i] || '';
-      });
-    }
-
-    player.setCsvData(headers, rowData, options.rowIndex, options.fields);
-  }
-
-  const startTime = Date.now();
-  const results = await player.play();
-  const duration = Date.now() - startTime;
-  
-  const passed = results.every((r: import('./player').StepResult) => r.success);
-  const logs = generateLogFromResults(results);
-  
-  let status: import('../types').TestRunStatus;
-  if (player.getState() === 'stopped') {
-    status = 'stopped';
-  } else if (passed) {
-    status = 'passed';
-  } else {
-    status = 'failed';
-  }
-
-  return {
-    passed,
-    results,
-    duration,
-    logs,
-    status
+    return {
+      success: result.success,
+      error: result.error,
+      duration: result.duration,
+      screenshot: result.screenshot,
+      actualValue: result.actualValue,
+      elementFound: result.elementFound,
+      locatorUsed: result.locatorUsed,
+      metadata: result.data,
+    };
   };
+  
+  // Create controller
+  const controller = ReplayControllerModule.createReplayController({
+    ...config?.controllerConfig,
+    stepExecutor,
+    onProgress: config?.onProgress,
+    onComplete: config?.onComplete,
+    onError: config?.onError,
+  });
+  
+  return { controller, executor, waitStrategy };
 }
 
 /**
- * Create TestRun from replay results
+ * Creates a simple replay controller with sensible defaults
  * 
- * Converts replay results into a TestRun object for storage.
- * 
- * CRITICAL: TestRun.logs is string (NOT string[])
- * 
- * @param projectId - Project ID
- * @param results - Step results from replay
- * @param options - Additional TestRun options
- * @returns TestRun object ready for storage
+ * @param onProgress - Progress callback
+ * @returns Configured ReplayController
  */
-export function createTestRunFromReplay(
-  projectId: string,
-  results: import('./player').StepResult[],
-  options: {
-    csvRowIndex?: number;
-    duration?: number;
-    status?: import('../types').TestRunStatus;
-  } = {}
-): import('../types').TestRun {
-  const { createTestRun } = require('../types');
-  const { generateLogFromResults } = require('./player');
+export function createSimpleReplayer(
+  onProgress?: (progress: import('./ReplayController').ReplayProgress) => void
+): import('./ReplayController').ReplayController {
+  const { controller } = createReplaySystem({
+    onProgress,
+    executorConfig: {
+      highlightElements: true,
+      scrollIntoView: true,
+    },
+  });
+  
+  return controller;
+}
 
-  const passed = results.every(r => r.success);
-  const logs = generateLogFromResults(results);
+// ============================================================================
+// REPLAY PRESETS
+// ============================================================================
 
-  let status = options.status;
-  if (!status) {
-    status = passed ? 'passed' : 'failed';
-  }
+/**
+ * Replay option presets for common scenarios
+ */
+export const REPLAY_PRESETS = {
+  /**
+   * Fast replay - minimal delays
+   */
+  fast: {
+    stepTimeout: 10000,
+    retryAttempts: 1,
+    retryDelay: 100,
+    waitBetweenSteps: 0,
+    slowMotion: false,
+  },
+  
+  /**
+   * Standard replay - balanced settings
+   */
+  standard: {
+    stepTimeout: 30000,
+    retryAttempts: 3,
+    retryDelay: 1000,
+    waitBetweenSteps: 100,
+    slowMotion: false,
+  },
+  
+  /**
+   * Slow replay - for debugging
+   */
+  slow: {
+    stepTimeout: 60000,
+    retryAttempts: 5,
+    retryDelay: 2000,
+    waitBetweenSteps: 500,
+    slowMotion: true,
+    slowMotionDelay: 1000,
+  },
+  
+  /**
+   * Debug replay - maximum visibility
+   */
+  debug: {
+    stepTimeout: 60000,
+    retryAttempts: 1,
+    retryDelay: 500,
+    waitBetweenSteps: 1000,
+    slowMotion: true,
+    slowMotionDelay: 2000,
+    highlightElements: true,
+    screenshotOnSuccess: true,
+    screenshotOnFailure: true,
+  },
+  
+  /**
+   * CI replay - for automated testing
+   */
+  ci: {
+    stepTimeout: 30000,
+    retryAttempts: 2,
+    retryDelay: 500,
+    waitBetweenSteps: 50,
+    slowMotion: false,
+    continueOnFailure: true,
+    screenshotOnFailure: true,
+  },
+  
+  /**
+   * Resilient replay - handles flaky tests
+   */
+  resilient: {
+    stepTimeout: 45000,
+    retryAttempts: 5,
+    retryDelay: 2000,
+    waitBetweenSteps: 200,
+    continueOnFailure: true,
+    validateLocators: true,
+  },
+} as const;
 
-  return createTestRun({
-    projectId,
-    status,
-    logs, // CRITICAL: string, not string[]
-    csvRowIndex: options.csvRowIndex ?? null,
-    duration: options.duration ?? results.reduce((sum, r) => sum + r.duration, 0)
+/**
+ * Replay preset names
+ */
+export type ReplayPreset = keyof typeof REPLAY_PRESETS;
+
+/**
+ * Creates a replay controller with a preset configuration
+ * 
+ * @param preset - Preset name
+ * @param overrides - Option overrides
+ * @returns Configured ReplayController
+ */
+export function createReplayerWithPreset(
+  preset: ReplayPreset,
+  overrides?: Partial<import('./ReplayController').ReplayControllerConfig>
+): import('./ReplayController').ReplayController {
+  const ReplayControllerModule = require('./ReplayController');
+  return ReplayControllerModule.createReplayController({
+    ...overrides,
+    options: {
+      ...REPLAY_PRESETS[preset],
+      ...overrides?.options,
+    },
   });
 }
 
-/**
- * Run data-driven replay for all CSV rows
- * 
- * Executes replay once for each row in CSV data.
- * 
- * @param steps - Steps to replay
- * @param csvData - CSV data including headers
- * @param fields - Field definitions with mappings
- * @param options - Replay options
- * @returns Array of results for each row
- */
-export async function runDataDrivenReplay(
-  steps: import('../types').Step[],
-  csvData: string[][],
-  fields: import('../types').Field[],
-  options: {
-    config?: import('./player').ReplayConfig;
-    stopOnFailure?: boolean;
-    onRowStart?: (rowIndex: number, totalRows: number) => void;
-    onRowComplete?: (rowIndex: number, passed: boolean) => void;
-  } = {}
-): Promise<Array<{
-  rowIndex: number;
-  passed: boolean;
-  results: import('./player').StepResult[];
-  duration: number;
-  logs: string;
-}>> {
-  const dataRows = csvData.slice(1);
-  const allResults: Array<{
-    rowIndex: number;
-    passed: boolean;
-    results: import('./player').StepResult[];
-    duration: number;
-    logs: string;
-  }> = [];
-
-  for (let i = 0; i < dataRows.length; i++) {
-    options.onRowStart?.(i, dataRows.length);
-
-    const result = await replayProject(steps, {
-      config: options.config,
-      csvData,
-      fields,
-      rowIndex: i
-    });
-
-    allResults.push({
-      rowIndex: i,
-      passed: result.passed,
-      results: result.results,
-      duration: result.duration,
-      logs: result.logs
-    });
-
-    options.onRowComplete?.(i, result.passed);
-
-    if (!result.passed && options.stopOnFailure) {
-      break;
-    }
-  }
-
-  return allResults;
-}
+// ============================================================================
+// EXECUTOR PRESETS
+// ============================================================================
 
 /**
- * Validate steps before replay
- * 
- * Checks all steps are valid before starting replay.
- * 
- * @param steps - Steps to validate
- * @returns Validation result
+ * Action executor presets
  */
-export function validateStepsForReplay(
-  steps: import('../types').Step[]
-): {
-  valid: boolean;
-  errors: Array<{ stepIndex: number; errors: string[] }>;
-  warnings: string[];
-} {
-  const { validateStep } = require('./step-executor');
+export const EXECUTOR_PRESETS = {
+  /**
+   * Default executor settings
+   */
+  default: {
+    timeout: 30000,
+    pollInterval: 100,
+    highlightElements: false,
+    scrollIntoView: true,
+    humanizeDelays: false,
+  },
   
-  const errors: Array<{ stepIndex: number; errors: string[] }> = [];
-  const warnings: string[] = [];
+  /**
+   * Visual executor - highlights actions
+   */
+  visual: {
+    timeout: 30000,
+    pollInterval: 100,
+    highlightElements: true,
+    highlightDuration: 500,
+    scrollIntoView: true,
+    humanizeDelays: true,
+    typingDelay: 100,
+  },
+  
+  /**
+   * Fast executor - minimal delays
+   */
+  fast: {
+    timeout: 10000,
+    pollInterval: 50,
+    highlightElements: false,
+    scrollIntoView: false,
+    humanizeDelays: false,
+    typingDelay: 0,
+  },
+} as const;
 
-  if (steps.length === 0) {
-    warnings.push('No steps to replay');
-    return { valid: true, errors, warnings };
-  }
+/**
+ * Executor preset names
+ */
+export type ExecutorPreset = keyof typeof EXECUTOR_PRESETS;
 
-  // First step should be 'open'
-  if (steps[0].event !== 'open') {
-    warnings.push('First step should be "open" event');
-  }
+// ============================================================================
+// TYPE RE-EXPORTS
+// ============================================================================
 
-  // Validate each step
-  for (let i = 0; i < steps.length; i++) {
-    const result = validateStep(steps[i]);
-    if (!result.valid) {
-      errors.push({ stepIndex: i, errors: result.errors });
-    }
-  }
+/**
+ * Re-export replay types from types module
+ */
+export type {
+  ReplayState,
+  ReplaySession,
+  ReplayOptions,
+  ReplayResult,
+  StepResult,
+  ReplayStats,
+} from '../types/replay';
 
-  // Note: Steps use array position for ordering, not an 'order' field
+/**
+ * Re-export step types from types module
+ */
+export type {
+  RecordedStep,
+  StepType,
+  StepTarget,
+} from '../types/step';
 
-  return {
-    valid: errors.length === 0,
-    errors,
-    warnings
-  };
+// ============================================================================
+// UTILITY FUNCTIONS
+// ============================================================================
+
+/**
+ * Calculates replay success rate
+ * 
+ * @param result - Replay result
+ * @returns Success rate as percentage (0-100)
+ */
+export function getSuccessRate(result: import('../types/replay').ReplayResult): number {
+  if (result.totalSteps === 0) return 100;
+  return Math.round((result.passedSteps / result.totalSteps) * 100);
 }
 
 /**
- * Get replay statistics
+ * Gets failed step details from a replay result
  * 
- * @param results - Step results from replay
- * @returns Statistics about the replay
+ * @param result - Replay result
+ * @returns Array of failed step results
  */
-export function getReplayStats(
-  results: import('./player').StepResult[]
-): {
+export function getFailedSteps(
+  result: import('../types/replay').ReplayResult
+): import('../types/replay').StepResult[] {
+  return result.stepResults.filter(r => r.status === 'failed');
+}
+
+/**
+ * Gets passed step details from a replay result
+ * 
+ * @param result - Replay result
+ * @returns Array of passed step results
+ */
+export function getPassedSteps(
+  result: import('../types/replay').ReplayResult
+): import('../types/replay').StepResult[] {
+  return result.stepResults.filter(r => r.status === 'passed');
+}
+
+/**
+ * Gets skipped step details from a replay result
+ * 
+ * @param result - Replay result
+ * @returns Array of skipped step results
+ */
+export function getSkippedSteps(
+  result: import('../types/replay').ReplayResult
+): import('../types/replay').StepResult[] {
+  return result.stepResults.filter(r => r.status === 'skipped');
+}
+
+/**
+ * Formats replay duration as human-readable string
+ * 
+ * @param result - Replay result
+ * @returns Formatted duration string
+ */
+export function formatReplayDuration(
+  result: import('../types/replay').ReplayResult
+): string {
+  const seconds = Math.floor(result.duration / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  
+  if (hours > 0) {
+    return `${hours}h ${minutes % 60}m ${seconds % 60}s`;
+  }
+  
+  if (minutes > 0) {
+    return `${minutes}m ${seconds % 60}s`;
+  }
+  
+  return `${seconds}s`;
+}
+
+/**
+ * Generates a summary report from replay result
+ * 
+ * @param result - Replay result
+ * @returns Summary object
+ */
+export function generateReplaySummary(result: import('../types/replay').ReplayResult): {
+  testName: string;
+  success: boolean;
+  successRate: number;
+  duration: string;
   totalSteps: number;
-  passedSteps: number;
-  failedSteps: number;
-  totalDuration: number;
-  averageStepDuration: number;
-  locatorStats: {
-    byStrategy: Record<string, number>;
-    averageConfidence: number;
-  };
-  errorStats: {
-    byCode: Record<string, number>;
+  passed: number;
+  failed: number;
+  skipped: number;
+  firstFailure?: {
+    stepIndex: number;
+    error: string;
   };
 } {
-  const totalSteps = results.length;
-  const passedSteps = results.filter(r => r.success).length;
-  const failedSteps = totalSteps - passedSteps;
-  const totalDuration = results.reduce((sum, r) => sum + r.duration, 0);
-  const averageStepDuration = totalSteps > 0 ? totalDuration / totalSteps : 0;
-
-  // Locator stats
-  const byStrategy: Record<string, number> = {};
-  let totalConfidence = 0;
-  let confidenceCount = 0;
-
-  for (const result of results) {
-    if (result.locatorStrategy) {
-      byStrategy[result.locatorStrategy] = (byStrategy[result.locatorStrategy] || 0) + 1;
-    }
-    if (result.locatorConfidence !== undefined) {
-      totalConfidence += result.locatorConfidence;
-      confidenceCount++;
-    }
-  }
-
-  // Error stats (extract error codes from error messages)
-  const byCode: Record<string, number> = {};
-  for (const result of results) {
-    if (!result.success && result.error) {
-      // Extract error code from message (format: "ERROR_CODE: message")
-      const match = result.error.match(/^([A-Z_]+):/);
-      const code = match ? match[1] : 'UNKNOWN_ERROR';
-      byCode[code] = (byCode[code] || 0) + 1;
-    }
-  }
-
-  return {
-    totalSteps,
-    passedSteps,
-    failedSteps,
-    totalDuration: Math.round(totalDuration),
-    averageStepDuration: Math.round(averageStepDuration),
-    locatorStats: {
-      byStrategy,
-      averageConfidence: confidenceCount > 0 ? Math.round(totalConfidence / confidenceCount) : 0
-    },
-    errorStats: {
-      byCode
-    }
-  };
-}
-
-/**
- * Create content script replay handler
- * 
- * Sets up replay in content script context with message passing.
- * 
- * @param sendMessage - Function to send messages to background
- * @returns Replay control object
- */
-export function createContentScriptReplay(
-  sendMessage: (message: unknown) => void
-): {
-  start: (steps: import('../types').Step[], config?: import('./player').ReplayConfig) => Promise<void>;
-  stop: () => void;
-  pause: () => void;
-  resume: () => void;
-  getState: () => import('./player').ReplayState;
-} {
-  const { Player } = require('./player');
+  const failedSteps = getFailedSteps(result);
   
-  let player: InstanceType<typeof Player> | null = null;
-
   return {
-    start: async (steps, config) => {
-      if (player?.isRunning()) {
-        throw new Error('Replay already in progress');
-      }
-
-      player = new Player(steps, config || {}, {
-        onStepStart: (step: import('../types').Step, index: number) => {
-          sendMessage({
-            action: 'replay_step_start',
-            data: { step, index }
-          });
-        },
-        onStepComplete: (result: import('./player').StepResult, index: number) => {
-          sendMessage({
-            action: 'replay_step_complete',
-            data: { result, index }
-          });
-        },
-        onProgress: (progress: import('./player').ReplayProgress) => {
-          sendMessage({
-            action: 'replay_progress',
-            data: { progress }
-          });
-        },
-        onComplete: (results: import('./player').StepResult[], passed: boolean) => {
-          sendMessage({
-            action: 'replay_complete',
-            data: { results, passed }
-          });
-        },
-        onError: (error: Error) => {
-          sendMessage({
-            action: 'replay_error',
-            data: { error: error.message }
-          });
-        }
-      });
-
-      sendMessage({
-        action: 'replay_started',
-        data: { stepCount: steps.length }
-      });
-
-      await player.play();
-    },
-
-    stop: () => {
-      player?.stop();
-      sendMessage({ action: 'replay_stopped', data: {} });
-    },
-
-    pause: () => {
-      player?.pause();
-      sendMessage({ action: 'replay_paused', data: {} });
-    },
-
-    resume: () => {
-      player?.resume();
-      sendMessage({ action: 'replay_resumed', data: {} });
-    },
-
-    getState: () => player?.getState() ?? 'idle'
+    testName: result.testCaseName,
+    success: result.success,
+    successRate: getSuccessRate(result),
+    duration: formatReplayDuration(result),
+    totalSteps: result.totalSteps,
+    passed: result.passedSteps,
+    failed: result.failedSteps,
+    skipped: result.skippedSteps,
+    firstFailure: failedSteps.length > 0 ? {
+      stepIndex: failedSteps[0].stepIndex,
+      error: failedSteps[0].error ?? 'Unknown error',
+    } : undefined,
   };
 }
 
+/**
+ * Calculates average step duration
+ * 
+ * @param result - Replay result
+ * @returns Average duration in ms
+ */
+export function getAverageStepDuration(
+  result: import('../types/replay').ReplayResult
+): number {
+  const completedSteps = result.stepResults.filter(
+    r => r.status === 'passed' || r.status === 'failed'
+  );
+  
+  if (completedSteps.length === 0) return 0;
+  
+  const totalDuration = completedSteps.reduce((sum, r) => sum + r.duration, 0);
+  return Math.round(totalDuration / completedSteps.length);
+}
+
+/**
+ * Finds the slowest steps in a replay
+ * 
+ * @param result - Replay result
+ * @param count - Number of steps to return
+ * @returns Array of step results sorted by duration
+ */
+export function getSlowestSteps(
+  result: import('../types/replay').ReplayResult,
+  count: number = 5
+): import('../types/replay').StepResult[] {
+  return [...result.stepResults]
+    .sort((a, b) => b.duration - a.duration)
+    .slice(0, count);
+}
+
+/**
+ * Checks if replay should be retried based on failure patterns
+ * 
+ * @param result - Replay result
+ * @returns Whether retry is recommended
+ */
+export function shouldRetryReplay(
+  result: import('../types/replay').ReplayResult
+): boolean {
+  // Don't retry if succeeded
+  if (result.success) return false;
+  
+  // Don't retry if most steps failed
+  const failureRate = result.failedSteps / result.totalSteps;
+  if (failureRate > 0.5) return false;
+  
+  // Retry if only 1-2 steps failed (might be flaky)
+  if (result.failedSteps <= 2) return true;
+  
+  // Retry if failures were at the end (might be timing)
+  const failedSteps = getFailedSteps(result);
+  const lastStepIndex = result.totalSteps - 1;
+  const failuresAtEnd = failedSteps.filter(
+    s => s.stepIndex >= lastStepIndex - 2
+  ).length;
+  
+  return failuresAtEnd === result.failedSteps;
+}
+
 // ============================================================================
-// DOCUMENTATION
+// WAIT CONDITION COMBINATORS
 // ============================================================================
 
 /**
- * REPLAY LAYER ARCHITECTURE
+ * Creates an AND combination of conditions
  * 
- * The replay layer executes recorded steps:
- * 
- * 1. Player (player.ts)
- *    - Core replay engine
- *    - Sequential step execution
- *    - CSV data injection
- *    - State management (running/paused/stopped)
- *    - Progress tracking
- *    - Callbacks for UI updates
- * 
- * 2. Step Executor (step-executor.ts)
- *    - Individual step execution
- *    - Phased execution with timing
- *    - Pre/post execution hooks
- *    - Detailed error information
- *    - Validation and reporting
- * 
- * STEP EVENT EXECUTION:
- * - 'open': Verify URL matches expected
- * - 'click': Locate element → verify interactable → click
- * - 'input': Locate element → inject value → type
- * - 'enter': Locate element → dispatch Enter key
- * 
- * CSV DATA INJECTION:
- * 1. setCsvData() configures field mappings
- * 2. For each 'input' step, check if bundle matches a field
- * 3. If matched, use CSV value instead of recorded value
- * 4. Falls back to original value if no mapping
- * 
- * TESTRUN CREATION:
- * 1. Replay completes
- * 2. generateLogFromResults() creates log string
- * 3. createTestRunFromReplay() creates TestRun object
- * 4. TestRun saved to storage
- * 
- * CRITICAL NOTES:
- * 
- * - Step.event MUST be 'click' | 'input' | 'enter' | 'open'
- * - TestRun.status: 'pending' | 'running' | 'passed' | 'failed' | 'stopped'
- * - TestRun.logs is string (NOT string[]) - use newlines
- * - Use locator strategies with retry for element finding
- * - Show highlights for visual feedback
- * - Support stopOnFailure option
- * 
- * USAGE RECOMMENDATIONS:
- * 
- * - Use replayProject() for complete workflow
- * - Use runDataDrivenReplay() for CSV batch testing
- * - Use StepExecutor with hooks for custom behavior
- * - Use validateStepsForReplay() before starting
- * - Use getReplayStats() for reporting
+ * @param conditions - Conditions to combine
+ * @returns Combined condition check function
  */
+export function allOf(
+  ...conditions: import('./WaitStrategy').WaitCondition[]
+): (strategy: import('./WaitStrategy').WaitStrategy, element: Element | null, options?: import('./WaitStrategy').WaitOptions) => Promise<import('./WaitStrategy').WaitResult> {
+  return (strategy, element, options) => strategy.waitForAll(element, conditions, options);
+}
+
+/**
+ * Creates an OR combination of conditions
+ * 
+ * @param conditions - Conditions to combine
+ * @returns Combined condition check function
+ */
+export function anyOf(
+  ...conditions: import('./WaitStrategy').WaitCondition[]
+): (strategy: import('./WaitStrategy').WaitStrategy, element: Element | null, options?: import('./WaitStrategy').WaitOptions) => Promise<import('./WaitStrategy').WaitResult> {
+  return (strategy, element, options) => strategy.waitForAny(element, conditions, options);
+}
+
+// ============================================================================
+// DEBUGGING UTILITIES
+// ============================================================================
+
+/**
+ * Creates a debug-enabled replay controller
+ * 
+ * @param options - Additional options
+ * @returns Debug-configured controller with logging
+ */
+export function createDebugReplayer(options?: {
+  logToConsole?: boolean;
+  onStepStart?: (step: import('../types/step').RecordedStep, index: number) => void;
+  onStepEnd?: (result: import('../types/replay').StepResult) => void;
+}): import('./ReplayController').ReplayController {
+  const { controller } = createReplaySystem({
+    controllerConfig: {
+      options: REPLAY_PRESETS.debug,
+      onStepComplete: (result) => {
+        if (options?.logToConsole) {
+          const status = result.status === 'passed' ? '✓' : result.status === 'failed' ? '✗' : '○';
+          console.log(`[Replay] ${status} Step ${result.stepIndex}: ${result.duration}ms`);
+          if (result.error) {
+            console.error(`[Replay] Error: ${result.error}`);
+          }
+        }
+        options?.onStepEnd?.(result);
+      },
+      onProgress: (progress) => {
+        if (options?.logToConsole) {
+          console.log(`[Replay] Progress: ${progress.percentage}% (${progress.completedSteps}/${progress.totalSteps})`);
+        }
+        if (progress.currentStep) {
+          options?.onStepStart?.(progress.currentStep, progress.currentStepIndex);
+        }
+      },
+    },
+    executorConfig: EXECUTOR_PRESETS.visual,
+  });
+  
+  return controller;
+}
