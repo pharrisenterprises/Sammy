@@ -369,3 +369,134 @@ export function validateProject(
 export function isValidProject(project: Partial<Project>): boolean {
   return validateProject(project).length === 0;
 }
+
+// ============================================================================
+// PHASE 4 RECORDING TYPES
+// ============================================================================
+
+/**
+ * Recording state for Phase 4 recording controller
+ */
+export type RecordingState = 
+  | 'idle'        // Not recording
+  | 'starting'    // Initializing recording
+  | 'recording'   // Actively capturing events
+  | 'paused'      // Recording paused
+  | 'stopping'    // Finalizing recording
+  | 'stopped'     // Recording complete
+  | 'error';      // Recording error
+
+/**
+ * Recording session information
+ */
+export interface RecordingSession {
+  /**
+   * Unique session identifier
+   */
+  id: string;
+  
+  /**
+   * Project ID being recorded
+   */
+  projectId?: string;
+  
+  /**
+   * Session start timestamp
+   */
+  startTime: number;
+  
+  /**
+   * Session end timestamp (if ended)
+   */
+  endTime?: number;
+  
+  /**
+   * Starting URL for recording
+   */
+  startUrl: string;
+  
+  /**
+   * Current tab ID
+   */
+  tabId?: number;
+  
+  /**
+   * Current recording state
+   */
+  state: RecordingState;
+  
+  /**
+   * Recorded steps
+   */
+  steps: any[];
+  
+  /**
+   * Step count
+   */
+  stepCount: number;
+  
+  /**
+   * Last activity timestamp
+   */
+  lastActivityTime: number;
+}
+
+/**
+ * Recording configuration options
+ */
+export interface RecordingOptions {
+  /**
+   * Capture click events
+   */
+  captureClicks?: boolean;
+  
+  /**
+   * Capture input events
+   */
+  captureInput?: boolean;
+  
+  /**
+   * Capture navigation events
+   */
+  captureNavigation?: boolean;
+  
+  /**
+   * Capture scroll events
+   */
+  captureScrolls?: boolean;
+  
+  /**
+   * Capture hover events
+   */
+  captureHovers?: boolean;
+  
+  /**
+   * Capture keyboard events
+   */
+  captureKeyboard?: boolean;
+  
+  /**
+   * Input debounce delay (ms)
+   */
+  inputDebounceMs?: number;
+  
+  /**
+   * Scroll debounce delay (ms)
+   */
+  scrollDebounceMs?: number;
+  
+  /**
+   * Hover delay before capture (ms)
+   */
+  hoverDelayMs?: number;
+  
+  /**
+   * Maximum steps per session
+   */
+  maxStepsPerSession?: number;
+  
+  /**
+   * Auto-save interval (ms)
+   */
+  autoSaveIntervalMs?: number;
+}

@@ -22,8 +22,8 @@ import type {
   StepType,
   StepTarget,
   StepMetadata,
-} from '../types/steps';
-import type { LocatorBundle } from '../types/locators';
+} from '../types/step';
+import type { LocatorBundle } from '../types/locator-bundle';
 import type { CapturedEvent, ElementInfo } from './EventCapture';
 
 // ============================================================================
@@ -654,12 +654,12 @@ export class StepBuilder {
     }
     
     // Check time window
-    if (current.timestamp - prev.timestamp > this.config.mergeWindowMs) {
+    if (!current.timestamp || !prev.timestamp || current.timestamp - prev.timestamp > this.config.mergeWindowMs) {
       return false;
     }
     
     // Check same target
-    if (!this.isSameTarget(prev.target, current.target)) {
+    if (!prev.target || !current.target || !this.isSameTarget(prev.target, current.target)) {
       return false;
     }
     
@@ -715,7 +715,6 @@ export class StepBuilder {
    */
   private mapEventToStepType(event: CapturedEvent): StepType {
     const eventType = event.type;
-    const data = event.data;
     
     switch (eventType) {
       case 'click':
@@ -774,8 +773,6 @@ export class StepBuilder {
    * Builds step target from DOM element
    */
   private buildTargetFromElement(element: Element): StepTarget {
-    const htmlElement = element as HTMLElement;
-    
     return {
       tagName: element.tagName.toLowerCase(),
       id: element.id || undefined,
@@ -881,17 +878,19 @@ export class StepBuilder {
     const type = step.type;
     
     // Get element identifier
-    let elementDesc = target.tagName;
+    let elementDesc = target?.tagName || 'element';
     
-    if (target.id) {
-      elementDesc = `#${target.id}`;
-    } else if (target.name) {
-      elementDesc = `[name="${target.name}"]`;
-    } else if (target.textContent) {
-      const text = target.textContent.slice(0, 30);
-      elementDesc = `"${text}${target.textContent.length > 30 ? '...' : ''}"`;
-    } else if (target.attributes?.['aria-label']) {
-      elementDesc = `[aria-label="${target.attributes['aria-label']}"]`;
+    if (target) {
+      if (target.id) {
+        elementDesc = `#${target.id}`;
+      } else if (target.name) {
+        elementDesc = `[name="${target.name}"]`;
+      } else if (target.textContent) {
+        const text = target.textContent.slice(0, 30);
+        elementDesc = `"${text}${target.textContent.length > 30 ? '...' : ''}"`;
+      } else if (target.attributes?.['aria-label']) {
+        elementDesc = `[aria-label="${target.attributes['aria-label']}"]`;
+      }
     }
     
     // Build description based on type

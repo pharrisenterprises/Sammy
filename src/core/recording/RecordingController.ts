@@ -21,11 +21,11 @@ import type {
   RecordingState,
   RecordingSession,
   RecordingOptions,
-} from '../types/recording';
+} from '../types/project';
 import type {
   RecordedStep,
   StepType,
-} from '../types/steps';
+} from '../types/step';
 import type { IMessageBus, Unsubscribe } from '../messaging/IMessageBus';
 
 // ============================================================================
@@ -63,9 +63,13 @@ export const MAX_UNDO_HISTORY = 50;
  * Recording state transitions
  */
 export const STATE_TRANSITIONS: Record<RecordingState, RecordingState[]> = {
-  idle: ['recording'],
-  recording: ['paused', 'idle'],
-  paused: ['recording', 'idle'],
+  idle: ['starting'],
+  starting: ['recording', 'error', 'idle'],
+  recording: ['paused', 'stopping'],
+  paused: ['recording', 'stopping'],
+  stopping: ['stopped', 'error'],
+  stopped: ['idle'],
+  error: ['idle'],
 };
 
 // ============================================================================
@@ -337,6 +341,7 @@ export class RecordingController {
     testCaseName?: string;
     description?: string;
     baseUrl?: string;
+    tabId?: number;
   } = {}): Promise<RecordingSession> {
     // Validate state transition
     if (!this.canTransitionTo('recording')) {
@@ -346,20 +351,14 @@ export class RecordingController {
     // Create new session
     const session: RecordingSession = {
       id: this.generateSessionId(),
-      testCaseId: options.testCaseId,
-      testCaseName: options.testCaseName ?? 'Untitled Recording',
-      description: options.description,
+      projectId: options.testCaseId,
+      startUrl: options.baseUrl ?? window.location.origin,
       startTime: Date.now(),
-      endTime: null,
       state: 'recording',
       steps: [],
-      baseUrl: options.baseUrl ?? window.location.origin,
-      metadata: {
-        userAgent: navigator.userAgent,
-        screenWidth: window.innerWidth,
-        screenHeight: window.innerHeight,
-        devicePixelRatio: window.devicePixelRatio,
-      },
+      stepCount: 0,
+      lastActivityTime: Date.now(),
+      tabId: options.tabId,
     };
     
     this._session = session;
@@ -374,7 +373,7 @@ export class RecordingController {
     this.attachEventListeners();
     
     // Start auto-save if configured
-    if (this._options.autoSaveIntervalMs > 0 && this.config.onAutoSave) {
+    if (this._options.autoSaveIntervalMs && this._options.autoSaveIntervalMs > 0 && this.config.onAutoSave) {
       this.startAutoSave();
     }
     
@@ -521,7 +520,7 @@ export class RecordingController {
     }
     
     // Check step limit
-    if (this._session.steps.length >= this._options.maxStepsPerSession) {
+    if (this._options.maxStepsPerSession && this._session.steps.length >= this._options.maxStepsPerSession) {
       this.handleError(new Error('Maximum steps per session reached'));
       throw new Error('Maximum steps per session reached');
     }
@@ -529,6 +528,14 @@ export class RecordingController {
     // Create full step
     const fullStep: RecordedStep = {
       id: this.generateStepId(),
+      name: step.name || `Step ${this.stepCounter + 1}`,
+      event: step.event || 'click',
+      path: step.path || '',
+      value: step.value || '',
+      label: step.label || '',
+      x: step.x || 0,
+      y: step.y || 0,
+      bundle: step.bundle,
       type: step.type,
       timestamp: step.timestamp ?? Date.now(),
       target: step.target ?? {
@@ -536,7 +543,6 @@ export class RecordingController {
         xpath: '',
         cssSelector: '',
       },
-      value: step.value,
       metadata: step.metadata ?? {},
       screenshot: step.screenshot,
       locatorBundle: step.locatorBundle,

@@ -561,3 +561,95 @@ export function reorderSteps(
   result.splice(toIndex, 0, removed);
   return result;
 }
+
+// ============================================================================
+// PHASE 4 TYPE COMPATIBILITY
+// ============================================================================
+
+/**
+ * Phase 4 step type - extends StepEvent with additional event types
+ * Maps to the 4 canonical StepEvent types during normalization
+ */
+export type StepType = 
+  | StepEvent 
+  | 'dblclick' 
+  | 'keypress' 
+  | 'scroll' 
+  | 'select' 
+  | 'focus' 
+  | 'blur' 
+  | 'submit' 
+  | 'drag'
+  | 'hover'
+  | 'navigate'
+  | 'wait'
+  | 'assert'
+  | 'screenshot'
+  | 'drop'
+  | 'upload'
+  | 'download';
+
+/**
+ * Phase 4 recorded step type
+ * Used by Phase 4 recording engine components
+ * Extends Step with additional properties needed during recording
+ */
+export interface RecordedStep extends Step {
+  /**
+   * Event type (can be extended StepType during recording)
+   */
+  type: StepType;
+  
+  /**
+   * Timestamp when step was recorded
+   */
+  timestamp?: number;
+  
+  /**
+   * Target element information
+   */
+  target?: StepTarget;
+  
+  /**
+   * Additional metadata from capture
+   */
+  metadata?: StepMetadata;
+  
+  /**
+   * Locator bundle (Phase 4 property name)
+   */
+  locatorBundle?: import('./locator-bundle').LocatorBundle;
+  
+  /**
+   * Screenshot data URL
+   */
+  screenshot?: string;
+}
+
+/**
+ * Target element information for Phase 4
+ */
+export interface StepTarget {
+  tagName: string;
+  id?: string;
+  className?: string;
+  name?: string;
+  xpath?: string;
+  cssSelector?: string;
+  textContent?: string;
+  attributes?: Record<string, string>;
+}
+
+/**
+ * Additional metadata for recorded steps
+ */
+export interface StepMetadata {
+  [key: string]: any;
+  iframeChain?: Array<{
+    id?: string;
+    name?: string;
+    src?: string;
+    index: number;
+  }>;
+  shadowHostChain?: any[];
+}

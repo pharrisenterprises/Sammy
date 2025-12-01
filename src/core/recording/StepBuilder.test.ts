@@ -20,7 +20,7 @@ import {
   STEP_TEMPLATES,
 } from './StepBuilder';
 import type { CapturedEvent, ElementInfo } from './EventCapture';
-import type { RecordedStep, StepTarget } from '../types/steps';
+import type { RecordedStep, StepTarget } from '../types/step';
 
 // ============================================================================
 // MOCK DATA
@@ -78,6 +78,23 @@ function createMockTarget(overrides: Partial<StepTarget> = {}): StepTarget {
     cssSelector: '#test-btn',
     textContent: 'Click me',
     attributes: {},
+    ...overrides,
+  };
+}
+
+function createMockRecordedStep(overrides: Partial<RecordedStep> = {}): RecordedStep {
+  return {
+    id: 'step-1',
+    name: 'Test Step',
+    event: 'click',
+    path: '/html/body/button',
+    value: '',
+    label: 'Test Button',
+    x: 100,
+    y: 200,
+    type: 'click',
+    timestamp: Date.now(),
+    target: createMockTarget(),
     ...overrides,
   };
 }
@@ -146,7 +163,7 @@ describe('StepBuilder', () => {
       const step = builder.withType('click').build();
       
       expect(step.target).toBeDefined();
-      expect(step.target.tagName).toBe('unknown');
+      expect(step.target?.tagName).toBe('unknown');
     });
   });
   
@@ -156,7 +173,7 @@ describe('StepBuilder', () => {
       const step = builder.fromCapturedEvent(event).build();
       
       expect(step.type).toBe('click');
-      expect(step.target.tagName).toBe('button');
+      expect(step.target?.tagName).toBe('button');
       expect(step.timestamp).toBe(event.timestamp);
     });
     
@@ -693,7 +710,7 @@ describe('buildStepFromEvent', () => {
     const step = buildStepFromEvent(event);
     
     expect(step.type).toBe('click');
-    expect(step.target.tagName).toBe('button');
+    expect(step.target?.tagName).toBe('button');
   });
 });
 
@@ -734,7 +751,7 @@ describe('buildNavigationStep', () => {
     
     expect(step.type).toBe('navigate');
     expect(step.value).toBe('https://example.com');
-    expect(step.target.tagName).toBe('window');
+    expect(step.target?.tagName).toBe('window');
   });
 });
 

@@ -17,7 +17,7 @@
  * @see recording-engine_breakdown.md for architecture details
  */
 
-import type { RecordedStep, StepType } from '../types/steps';
+import type { RecordedStep, StepType } from '../types/step';
 
 // ============================================================================
 // CONSTANTS
@@ -1017,7 +1017,6 @@ export class EventCapture {
    * Extracts element information
    */
   extractElementInfo(element: Element): ElementInfo {
-    const htmlElement = element as HTMLElement;
     const rect = element.getBoundingClientRect();
     
     let textContent = element.textContent?.trim() ?? '';
@@ -1419,7 +1418,7 @@ export function createEventCapture(config: {
  * Converts captured event to recorded step
  */
 export function capturedEventToStep(captured: CapturedEvent): Partial<RecordedStep> {
-  const stepType = mapEventTypeToStepType(captured.type, captured.data);
+  const stepType = mapEventTypeToStepType(captured.type);
   
   return {
     type: stepType,
@@ -1446,7 +1445,7 @@ export function capturedEventToStep(captured: CapturedEvent): Partial<RecordedSt
 /**
  * Maps event type to step type
  */
-function mapEventTypeToStepType(eventType: CapturableEvent, data: EventData): StepType {
+function mapEventTypeToStepType(eventType: CapturableEvent): StepType {
   switch (eventType) {
     case 'click':
     case 'mousedown':
