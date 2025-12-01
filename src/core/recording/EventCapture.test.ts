@@ -1,875 +1,629 @@
 /**
- * EventCapture Test Suite
+ * Tests for EventCapture
  * @module core/recording/EventCapture.test
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   EventCapture,
   createEventCapture,
-  capturedEventToStep,
-  DEFAULT_CAPTURE_OPTIONS,
-  CAPTURABLE_EVENTS,
-  IGNORED_ELEMENTS,
-  EXTENSION_MARKERS,
-  SENSITIVE_INPUT_TYPES,
-  type CapturedEvent,
-  type ElementInfo,
+  isInputElement,
+  isClickableElement,
+  getClickableAncestor,
+  describeEvent,
+  DEFAULT_CAPTURE_CONFIG,
+  type CapturedEventData,
 } from './EventCapture';
 
 // ============================================================================
-// BROWSER GLOBALS MOCK
+// TEST HELPERS
 // ============================================================================
 
-// Mock global objects
-Object.defineProperty(global, 'window', {
-  value: {
-    location: { href: 'https://example.com' },
-    innerWidth: 1920,
-    innerHeight: 1080,
-    scrollX: 0,
-    scrollY: 0,
-  },
-  writable: true,
-  configurable: true,
-});
-
-Object.defineProperty(global, 'navigator', {
-  value: {
-    userAgent: 'Mozilla/5.0 (Test)',
-  },
-  writable: true,
-  configurable: true,
-});
-
-// Mock document with event listener tracking
-const eventListeners: Map<string, Set<EventListener>> = new Map();
-
-const mockDocument = {
-  createElement: (tag: string) => {
-    const element: any = {
-      tagName: tag.toUpperCase(),
-      nodeType: 1,
-      parentNode: null,
-      childNodes: [] as any[],
-      children: [] as any[],
-      classList: {
-        contains: (cls: string) => {
-          if (!element.className) return false;
-          return element.className.split(' ').includes(cls);
-        },
-        add: (cls: string) => {
-          if (!element.className) element.className = '';
-          element.className = element.className ? `${element.className} ${cls}` : cls;
-        },
-      },
-      setAttribute: (name: string, value: string) => {
-        element[name] = value;
-        if (!element.attributes) element.attributes = {};
-        element.attributes[name] = value;
-      },
-      getAttribute: (name: string) => element[name] || null,
-      hasAttribute: (name: string) => name in element,
-      appendChild: (child: any) => {
-        child.parentNode = element;
-        element.childNodes.push(child);
-        if (child.nodeType === 1) element.children.push(child);
-        return child;
-      },
-      addEventListener: (type: string, listener: EventListener) => {
-        if (!eventListeners.has(type)) {
-          eventListeners.set(type, new Set());
-        }
-        eventListeners.get(type)!.add(listener);
-      },
-      removeEventListener: (type: string, listener: EventListener) => {
-        eventListeners.get(type)?.delete(listener);
-      },
-      click: () => {
-        const event = new MouseEvent('click', { bubbles: true });
-        Object.defineProperty(event, 'target', { value: element, enumerable: true });
-        Object.defineProperty(event, 'isTrusted', { value: true, enumerable: true });
-        element.dispatchEvent(event);
-      },
-      dispatchEvent: (event: Event) => {
-        Object.defineProperty(event, 'target', { value: element, enumerable: true });
-        if (!Object.prototype.hasOwnProperty.call(event, 'isTrusted')) {
-          Object.defineProperty(event, 'isTrusted', { value: true, enumerable: true });
-        }
-        
-        // Bubble up
-        let current: any = element;
-        while (current) {
-          const listeners = eventListeners.get(event.type);
-          if (listeners) {
-            listeners.forEach(listener => listener(event as any));
-          }
-          current = current.parentNode;
-        }
-        
-        // Document listeners
-        const docListeners = documentEventListeners.get(event.type);
-        if (docListeners) {
-          docListeners.forEach(listener => listener(event as any));
-        }
-        
-        return true;
-      },
-      getBoundingClientRect: () => ({
-        top: 0,
-        left: 0,
-        right: 100,
-        bottom: 100,
-        width: 100,
-        height: 100,
-      }),
-    };
-    return element;
-  },
-  body: null as any,
-  documentElement: null as any,
-  addEventListener: vi.fn(),
-  removeEventListener: vi.fn(),
-  querySelectorAll: (selector: string) => [],
-};
-
-// Mock MutationObserver
-global.MutationObserver = class MutationObserver {
-  constructor(callback: MutationCallback) {}
-  observe() {}
-  disconnect() {}
-  takeRecords() { return []; }
-} as any;
-
-// Mock Element constructor for instanceof checks
-global.Element = class Element {
-  nodeType = 1;
-} as any;
-
-global.HTMLElement = class HTMLElement extends (global.Element as any) {} as any;
-
-global.Node = class Node {
-  nodeType = 1;
-  ELEMENT_NODE = 1;
-  TEXT_NODE = 3;
-  DOCUMENT_NODE = 9;
-} as any;
-
-global.CSS = {
-  escape: (str: string) => str.replace(/[^a-zA-Z0-9_-]/g, '\\$&'),
-} as any;
-
-// Mock Event constructors
-global.Event = class Event {
-  type: string;
-  bubbles: boolean;
-  isTrusted: boolean = true;
-  target: any;
-  
-  constructor(type: string, options?: any) {
-    this.type = type;
-    this.bubbles = options?.bubbles || false;
-  }
-  
-  composedPath() {
-    const path: any[] = [];
-    let current = this.target;
-    while (current) {
-      path.push(current);
-      current = current.parentNode;
-    }
-    return path;
-  }
-} as any;
-
-global.MouseEvent = class MouseEvent extends (global.Event as any) {
-  button: number = 0;
-  clientX: number = 0;
-  clientY: number = 0;
-  pageX: number = 0;
-  pageY: number = 0;
-  offsetX: number = 0;
-  offsetY: number = 0;
-  ctrlKey: boolean = false;
-  shiftKey: boolean = false;
-  altKey: boolean = false;
-  metaKey: boolean = false;
-  
-  constructor(type: string, options?: any) {
-    super(type, options);
-    Object.assign(this, options);
-  }
-} as any;
-
-global.InputEvent = class InputEvent extends (global.Event as any) {
-  data: string | null = null;
-  isComposing: boolean = false;
-  
-  constructor(type: string, options?: any) {
-    super(type, options);
-    Object.assign(this, options);
-  }
-} as any;
-
-global.KeyboardEvent = class KeyboardEvent extends (global.Event as any) {
-  key: string = '';
-  code: string = '';
-  keyCode: number = 0;
-  ctrlKey: boolean = false;
-  shiftKey: boolean = false;
-  altKey: boolean = false;
-  metaKey: boolean = false;
-  repeat: boolean = false;
-  isComposing: boolean = false;
-  
-  constructor(type: string, options?: any) {
-    super(type, options);
-    Object.assign(this, options);
-  }
-} as any;
-
-// Track document-level listeners separately
-const documentEventListeners: Map<string, Set<EventListener>> = new Map();
-
-mockDocument.addEventListener = ((type: string, listener: EventListener, options?: any) => {
-  if (!documentEventListeners.has(type)) {
-    documentEventListeners.set(type, new Set());
-  }
-  documentEventListeners.get(type)!.add(listener);
-}) as any;
-
-mockDocument.removeEventListener = ((type: string, listener: EventListener, options?: any) => {
-  documentEventListeners.get(type)?.delete(listener);
-}) as any;
-
-// Create body and documentElement
-mockDocument.body = mockDocument.createElement('body');
-mockDocument.documentElement = mockDocument.createElement('html');
-mockDocument.documentElement.appendChild(mockDocument.body);
-
-// Set as global
-Object.defineProperty(global, 'document', {
-  value: mockDocument,
-  writable: true,
-  configurable: true,
-});
-
-// ============================================================================
-// MOCK DOM SETUP
-// ============================================================================
-
-function createMockElement(
-  tag: string,
-  attrs: Record<string, string> = {},
-  textContent?: string
-): HTMLElement {
-  const element = document.createElement(tag);
-  
-  for (const [key, value] of Object.entries(attrs)) {
-    if (key === 'className') {
-      element.className = value;
-    } else {
-      element.setAttribute(key, value);
-    }
-  }
-  
-  if (textContent) {
-    element.textContent = textContent;
-  }
-  
-  document.body.appendChild(element);
-  return element;
+function createClickEvent(target: Element, options?: Partial<MouseEventInit>): MouseEvent {
+  const event = new MouseEvent('click', {
+    bubbles: true,
+    cancelable: true,
+    clientX: 100,
+    clientY: 100,
+    ...options,
+  });
+  Object.defineProperty(event, 'target', { value: target });
+  return event;
 }
 
-function cleanupElements(): void {
-  document.body.innerHTML = '';
+function createInputEvent(target: Element): Event {
+  const event = new Event('input', { bubbles: true });
+  Object.defineProperty(event, 'target', { value: target });
+  return event;
+}
+
+function createKeyboardEvent(key: string, target: Element): KeyboardEvent {
+  const event = new KeyboardEvent('keydown', {
+    key,
+    bubbles: true,
+    cancelable: true,
+  });
+  Object.defineProperty(event, 'target', { value: target });
+  return event;
 }
 
 // ============================================================================
-// CONSTANT TESTS
-// ============================================================================
-
-describe('EventCapture constants', () => {
-  it('should have capturable events defined', () => {
-    expect(CAPTURABLE_EVENTS).toContain('click');
-    expect(CAPTURABLE_EVENTS).toContain('input');
-    expect(CAPTURABLE_EVENTS).toContain('keydown');
-  });
-  
-  it('should have ignored elements defined', () => {
-    expect(IGNORED_ELEMENTS).toContain('script');
-    expect(IGNORED_ELEMENTS).toContain('style');
-  });
-  
-  it('should have extension markers defined', () => {
-    expect(EXTENSION_MARKERS).toContain('data-copilot-extension');
-  });
-  
-  it('should have sensitive input types defined', () => {
-    expect(SENSITIVE_INPUT_TYPES).toContain('password');
-  });
-  
-  it('should have default options', () => {
-    expect(DEFAULT_CAPTURE_OPTIONS.captureClicks).toBe(true);
-    expect(DEFAULT_CAPTURE_OPTIONS.captureInput).toBe(true);
-    expect(DEFAULT_CAPTURE_OPTIONS.sanitizeSensitive).toBe(true);
-  });
-});
-
-// ============================================================================
-// EVENT CAPTURE TESTS
+// EVENTCAPTURE CLASS TESTS
 // ============================================================================
 
 describe('EventCapture', () => {
   let capture: EventCapture;
-  let capturedEvents: CapturedEvent[];
   
   beforeEach(() => {
-    capturedEvents = [];
-    capture = createEventCapture({
-      onCapture: (event) => capturedEvents.push(event),
+    capture = new EventCapture({
+      filterSyntheticEvents: false, // Allow jsdom synthetic events in tests
+      inputDebounceMs: 0, // Disable debouncing for tests
+      dedupeIntervalMs: 0, // Disable deduplication for tests
     });
   });
   
   afterEach(() => {
-    capture.stop();
-    cleanupElements();
+    capture.dispose();
   });
   
-  describe('lifecycle', () => {
-    it('should start capturing', () => {
-      capture.start();
-      expect(capture.isCapturing).toBe(true);
-    });
-    
-    it('should stop capturing', () => {
-      capture.start();
-      capture.stop();
-      expect(capture.isCapturing).toBe(false);
-    });
-    
-    it('should reset state', () => {
-      capture.start();
-      capture.reset();
+  describe('initialization', () => {
+    it('should initialize with default config', () => {
+      const defaultCapture = new EventCapture();
+      const config = defaultCapture.getConfig();
       
-      expect(capture.isCapturing).toBe(false);
-      expect(capture.getStats().eventsProcessed).toBe(0);
+      expect(config.filterSyntheticEvents).toBe(true);
+      expect(config.inputDebounceMs).toBe(DEFAULT_CAPTURE_CONFIG.inputDebounceMs);
+      
+      defaultCapture.dispose();
+    });
+    
+    it('should accept custom config', () => {
+      const customCapture = new EventCapture({
+        filterSyntheticEvents: false,
+        inputDebounceMs: 500,
+      });
+      
+      const config = customCapture.getConfig();
+      expect(config.filterSyntheticEvents).toBe(false);
+      expect(config.inputDebounceMs).toBe(500);
+      
+      customCapture.dispose();
     });
   });
   
-  describe('click events', () => {
-    it('should capture click events', () => {
-      const button = createMockElement('button', { id: 'test-btn' }, 'Click me');
+  describe('callback', () => {
+    it('should call callback when event is processed', () => {
+      const callback = vi.fn();
+      capture.setCallback(callback);
       
-      capture.start();
-      button.click();
+      const button = document.createElement('button');
+      document.body.appendChild(button);
       
-      expect(capturedEvents.length).toBe(1);
-      expect(capturedEvents[0].type).toBe('click');
-      expect(capturedEvents[0].target.tagName).toBe('button');
+      const event = createClickEvent(button);
+      capture.processEvent(event);
+      
+      expect(callback).toHaveBeenCalledTimes(1);
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actionType: 'click',
+          target: button,
+        })
+      );
+      
+      document.body.removeChild(button);
+    });
+  });
+  
+  describe('click event processing', () => {
+    it('should process click events', () => {
+      const callback = vi.fn();
+      capture.setCallback(callback);
+      
+      const button = document.createElement('button');
+      document.body.appendChild(button);
+      
+      const event = createClickEvent(button);
+      const result = capture.processEvent(event);
+      
+      expect(result).not.toBeNull();
+      expect(result?.actionType).toBe('click');
+      expect(result?.eventType).toBe('click');
+      expect(result?.target).toBe(button);
+      
+      document.body.removeChild(button);
     });
     
-    it('should capture click coordinates', () => {
-      const button = createMockElement('button', {}, 'Click');
+    it('should capture coordinates for click events', () => {
+      const button = document.createElement('button');
+      document.body.appendChild(button);
       
-      capture.start();
-      
-      const event = new MouseEvent('click', {
-        bubbles: true,
-        clientX: 100,
+      const event = createClickEvent(button, {
+        clientX: 150,
         clientY: 200,
       });
-      button.dispatchEvent(event);
       
-      expect(capturedEvents.length).toBe(1);
-      const data = capturedEvents[0].data as { clientX: number; clientY: number };
-      expect(data.clientX).toBe(100);
-      expect(data.clientY).toBe(200);
+      const result = capture.processEvent(event);
+      
+      expect(result?.coordinates).not.toBeNull();
+      expect(result?.coordinates?.clientX).toBe(150);
+      expect(result?.coordinates?.clientY).toBe(200);
+      
+      document.body.removeChild(button);
     });
     
-    it('should capture modifier keys', () => {
-      const button = createMockElement('button', {}, 'Click');
+    it('should detect checkbox clicks', () => {
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = true;
+      document.body.appendChild(checkbox);
       
-      capture.start();
+      const event = createClickEvent(checkbox);
+      const result = capture.processEvent(event);
       
-      const event = new MouseEvent('click', {
-        bubbles: true,
-        ctrlKey: true,
-        shiftKey: true,
-      });
-      button.dispatchEvent(event);
+      expect(result?.actionType).toBe('check');
+      expect(result?.metadata.isCheckbox).toBe(true);
+      expect(result?.metadata.isChecked).toBe(true);
       
-      const data = capturedEvents[0].data as { ctrlKey: boolean; shiftKey: boolean };
-      expect(data.ctrlKey).toBe(true);
-      expect(data.shiftKey).toBe(true);
+      document.body.removeChild(checkbox);
+    });
+    
+    it('should detect unchecked checkbox clicks', () => {
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = false;
+      document.body.appendChild(checkbox);
+      
+      const event = createClickEvent(checkbox);
+      const result = capture.processEvent(event);
+      
+      expect(result?.actionType).toBe('uncheck');
+      expect(result?.metadata.isChecked).toBe(false);
+      
+      document.body.removeChild(checkbox);
+    });
+    
+    it('should detect radio button clicks', () => {
+      const radio = document.createElement('input');
+      radio.type = 'radio';
+      radio.checked = true;
+      document.body.appendChild(radio);
+      
+      const event = createClickEvent(radio);
+      const result = capture.processEvent(event);
+      
+      expect(result?.actionType).toBe('select');
+      expect(result?.metadata.isRadio).toBe(true);
+      
+      document.body.removeChild(radio);
+    });
+    
+    it('should detect navigation links', () => {
+      const link = document.createElement('a');
+      link.href = 'https://example.com';
+      document.body.appendChild(link);
+      
+      const event = createClickEvent(link);
+      const result = capture.processEvent(event);
+      
+      expect(result?.actionType).toBe('navigate');
+      expect(result?.metadata.isNavigation).toBe(true);
+      
+      document.body.removeChild(link);
     });
   });
   
-  describe('input events', () => {
-    it('should capture input events', () => {
-      const input = createMockElement('input', {
-        type: 'text',
-        id: 'test-input',
-      }) as HTMLInputElement;
+  describe('input event processing', () => {
+    it('should process input events', () => {
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.value = 'test value';
+      document.body.appendChild(input);
       
-      capture.start();
+      const event = createInputEvent(input);
+      const result = capture.processEvent(event);
       
-      input.value = 'hello';
-      input.dispatchEvent(new InputEvent('input', { bubbles: true }));
+      expect(result?.actionType).toBe('input');
+      expect(result?.value).toBe('test value');
       
-      expect(capturedEvents.length).toBe(1);
-      expect(capturedEvents[0].type).toBe('input');
-      
-      const data = capturedEvents[0].data as { value: string };
-      expect(data.value).toBe('hello');
+      document.body.removeChild(input);
     });
     
-    it('should sanitize password inputs', () => {
-      const input = createMockElement('input', {
-        type: 'password',
-      }) as HTMLInputElement;
+    it('should process textarea events', () => {
+      const textarea = document.createElement('textarea');
+      textarea.value = 'multiline\ntext';
+      document.body.appendChild(textarea);
       
-      capture.start();
+      const event = createInputEvent(textarea);
+      const result = capture.processEvent(event);
       
-      input.value = 'secret123';
-      input.dispatchEvent(new InputEvent('input', { bubbles: true }));
+      expect(result?.value).toBe('multiline\ntext');
       
-      const data = capturedEvents[0].data as { value: string };
-      expect(data.value).toBe('********');
+      document.body.removeChild(textarea);
     });
     
-    it('should truncate long values', () => {
-      const input = createMockElement('input', {
-        type: 'text',
-      }) as HTMLInputElement;
+    it('should process select events', () => {
+      const select = document.createElement('select');
+      const option = document.createElement('option');
+      option.value = 'option1';
+      select.appendChild(option);
+      select.value = 'option1';
+      document.body.appendChild(select);
       
-      const longValue = 'a'.repeat(2000);
+      const event = createInputEvent(select);
+      const result = capture.processEvent(event);
       
-      capture.start();
-      input.value = longValue;
-      input.dispatchEvent(new InputEvent('input', { bubbles: true }));
+      expect(result?.value).toBe('option1');
       
-      const data = capturedEvents[0].data as { value: string };
-      expect(data.value.length).toBeLessThan(2000);
-      expect(data.value.endsWith('...')).toBe(true);
+      document.body.removeChild(select);
     });
   });
   
-  describe('keyboard events', () => {
-    it('should capture keydown events', () => {
-      const input = createMockElement('input', { type: 'text' });
+  describe('keyboard event processing', () => {
+    it('should process Enter key', () => {
+      const input = document.createElement('input');
+      document.body.appendChild(input);
       
-      capture.start();
+      const event = createKeyboardEvent('Enter', input);
+      const result = capture.processEvent(event);
       
-      const event = new KeyboardEvent('keydown', {
-        bubbles: true,
-        key: 'Enter',
-        code: 'Enter',
-      });
-      input.dispatchEvent(event);
+      expect(result?.actionType).toBe('enter');
+      expect(result?.metadata.key).toBe('Enter');
       
-      expect(capturedEvents.length).toBe(1);
-      expect(capturedEvents[0].type).toBe('keydown');
-      
-      const data = capturedEvents[0].data as { key: string };
-      expect(data.key).toBe('Enter');
+      document.body.removeChild(input);
     });
     
-    it('should capture keyboard modifiers', () => {
-      const input = createMockElement('input', { type: 'text' });
+    it('should process Tab key', () => {
+      const input = document.createElement('input');
+      document.body.appendChild(input);
       
-      capture.start();
+      const event = createKeyboardEvent('Tab', input);
+      const result = capture.processEvent(event);
       
-      const event = new KeyboardEvent('keydown', {
-        bubbles: true,
-        key: 'a',
-        ctrlKey: true,
-        metaKey: true,
-      });
-      input.dispatchEvent(event);
+      expect(result?.actionType).toBe('tab');
       
-      const data = capturedEvents[0].data as { ctrlKey: boolean; metaKey: boolean };
-      expect(data.ctrlKey).toBe(true);
-      expect(data.metaKey).toBe(true);
+      document.body.removeChild(input);
+    });
+    
+    it('should process Escape key', () => {
+      const input = document.createElement('input');
+      document.body.appendChild(input);
+      
+      const event = createKeyboardEvent('Escape', input);
+      const result = capture.processEvent(event);
+      
+      expect(result?.actionType).toBe('escape');
+      
+      document.body.removeChild(input);
+    });
+    
+    it('should ignore other keys', () => {
+      const input = document.createElement('input');
+      document.body.appendChild(input);
+      
+      const event = createKeyboardEvent('a', input);
+      const result = capture.processEvent(event);
+      
+      expect(result).toBeNull();
+      
+      document.body.removeChild(input);
     });
   });
   
-  describe('element filtering', () => {
-    it('should ignore script elements', () => {
-      const script = createMockElement('script', {});
-      
-      capture.start();
-      script.click();
-      
-      expect(capturedEvents.length).toBe(0);
-    });
-    
-    it('should ignore extension UI elements', () => {
-      const div = createMockElement('div', {
-        'data-copilot-extension': 'true',
+  describe('synthetic event filtering', () => {
+    it('should filter synthetic events by default', () => {
+      const filteringCapture = new EventCapture({
+        filterSyntheticEvents: true,
+        inputDebounceMs: 0,
       });
       
-      capture.start();
-      div.click();
-      
-      expect(capturedEvents.length).toBe(0);
-    });
-    
-    it('should ignore elements inside extension UI', () => {
-      const container = createMockElement('div', {
-        'data-copilot-extension': 'true',
-      });
       const button = document.createElement('button');
-      container.appendChild(button);
+      document.body.appendChild(button);
       
-      capture.start();
-      button.click();
-      
-      expect(capturedEvents.length).toBe(0);
-    });
-    
-    it('should ignore untrusted events', () => {
-      const button = createMockElement('button', {});
-      
-      capture.start();
-      
-      // Create untrusted event
+      // jsdom events have isTrusted=false by default (synthetic)
       const event = new MouseEvent('click', { bubbles: true });
-      Object.defineProperty(event, 'isTrusted', { value: false });
-      button.dispatchEvent(event);
+      Object.defineProperty(event, 'target', { value: button });
       
-      expect(capturedEvents.length).toBe(0);
-    });
-  });
-  
-  describe('element info extraction', () => {
-    it('should extract element info', () => {
-      const button = createMockElement('button', {
-        id: 'my-btn',
-        className: 'btn primary',
-        'data-testid': 'submit-button',
-        'aria-label': 'Submit form',
-      }, 'Submit');
+      const result = filteringCapture.processEvent(event);
       
-      capture.start();
-      button.click();
+      expect(result).toBeNull();
       
-      const info = capturedEvents[0].target;
-      
-      expect(info.tagName).toBe('button');
-      expect(info.id).toBe('my-btn');
-      expect(info.classNames).toContain('btn');
-      expect(info.classNames).toContain('primary');
-      expect(info.dataAttrs['data-testid']).toBe('submit-button');
-      expect(info.aria['aria-label']).toBe('Submit form');
+      document.body.removeChild(button);
+      filteringCapture.dispose();
     });
     
-    it('should generate XPath', () => {
-      const div = createMockElement('div', {});
+    it('should allow synthetic events when configured', () => {
+      const nonFilteringCapture = new EventCapture({
+        filterSyntheticEvents: false,
+        inputDebounceMs: 0,
+      });
+      
       const button = document.createElement('button');
-      div.appendChild(button);
+      document.body.appendChild(button);
       
-      capture.start();
-      button.click();
+      // jsdom events have isTrusted=false by default (synthetic)
+      const event = new MouseEvent('click', { bubbles: true });
+      Object.defineProperty(event, 'target', { value: button });
       
-      const xpath = capturedEvents[0].target.xpath;
-      expect(xpath).toMatch(/\/.*button/);
+      const result = nonFilteringCapture.processEvent(event);
+      
+      expect(result).not.toBeNull();
+      expect(result?.isTrusted).toBe(false);
+      
+      document.body.removeChild(button);
+      nonFilteringCapture.dispose();
     });
-    
-    it('should generate CSS selector', () => {
-      const button = createMockElement('button', { id: 'unique-id' });
-      
-      capture.start();
-      button.click();
-      
-      const selector = capturedEvents[0].target.cssSelector;
-      expect(selector).toBe('#unique-id');
-    });
-    
-    it('should prefer data-testid in CSS selector', () => {
-      const button = createMockElement('button', {
-        'data-testid': 'my-button',
+  });
+  
+  describe('debouncing', () => {
+    it('should debounce rapid input events', async () => {
+      const debouncingCapture = new EventCapture({
+        filterSyntheticEvents: false,
+        inputDebounceMs: 100,
+        dedupeIntervalMs: 0, // Disable deduplication for this test
       });
       
-      capture.start();
-      button.click();
+      const callback = vi.fn();
+      debouncingCapture.setCallback(callback);
       
-      const selector = capturedEvents[0].target.cssSelector;
-      expect(selector).toContain('data-testid');
+      const input = document.createElement('input');
+      input.value = '';
+      document.body.appendChild(input);
+      
+      // Simulate rapid typing
+      for (const char of ['t', 'te', 'tes', 'test']) {
+        input.value = char;
+        const event = createInputEvent(input);
+        debouncingCapture.processEvent(event);
+      }
+      
+      // Should not have emitted yet
+      expect(callback).not.toHaveBeenCalled();
+      
+      // Wait for debounce
+      await new Promise(resolve => setTimeout(resolve, 150));
+      
+      // Should have emitted once with final value
+      expect(callback).toHaveBeenCalledTimes(1);
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({ value: 'test' })
+      );
+      
+      document.body.removeChild(input);
+      debouncingCapture.dispose();
     });
   });
   
-  describe('custom filters', () => {
-    it('should apply custom filter', () => {
-      capture.addFilter((event, target) => {
-        return target.tagName !== 'SPAN';
+  describe('cleanup', () => {
+    it('should clear pending state', () => {
+      capture.clear();
+      // Should not throw
+      expect(() => capture.clear()).not.toThrow();
+    });
+    
+    it('should flush pending inputs', async () => {
+      const debouncingCapture = new EventCapture({
+        filterSyntheticEvents: false,
+        inputDebounceMs: 1000, // Long debounce
       });
       
-      const button = createMockElement('button', {});
-      const span = createMockElement('span', {});
+      const callback = vi.fn();
+      debouncingCapture.setCallback(callback);
       
-      capture.start();
-      button.click();
-      span.click();
+      const input = document.createElement('input');
+      input.value = 'pending';
+      document.body.appendChild(input);
       
-      expect(capturedEvents.length).toBe(1);
-      expect(capturedEvents[0].target.tagName).toBe('button');
-    });
-    
-    it('should remove custom filter', () => {
-      const filter = () => false;
-      capture.addFilter(filter);
-      capture.removeFilter(filter);
+      const event = createInputEvent(input);
+      debouncingCapture.processEvent(event);
       
-      const button = createMockElement('button', {});
+      // Flush immediately
+      debouncingCapture.flushPendingInput(input);
       
-      capture.start();
-      button.click();
+      expect(callback).toHaveBeenCalledTimes(1);
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({ value: 'pending' })
+      );
       
-      expect(capturedEvents.length).toBe(1);
-    });
-  });
-  
-  describe('options', () => {
-    it('should respect captureClicks option', () => {
-      capture.updateOptions({ captureClicks: false });
-      
-      const button = createMockElement('button', {});
-      
-      capture.start();
-      button.click();
-      
-      expect(capturedEvents.length).toBe(0);
-    });
-    
-    it('should respect captureInput option', () => {
-      capture.updateOptions({ captureInput: false });
-      
-      const input = createMockElement('input', { type: 'text' }) as HTMLInputElement;
-      
-      capture.start();
-      input.value = 'test';
-      input.dispatchEvent(new InputEvent('input', { bubbles: true }));
-      
-      expect(capturedEvents.length).toBe(0);
-    });
-  });
-  
-  describe('statistics', () => {
-    it('should track events processed', () => {
-      const button = createMockElement('button', {});
-      
-      capture.start();
-      button.click();
-      button.click();
-      
-      const stats = capture.getStats();
-      expect(stats.eventsProcessed).toBe(2);
-    });
-    
-    it('should track events captured', () => {
-      const button = createMockElement('button', {});
-      
-      capture.start();
-      button.click();
-      
-      const stats = capture.getStats();
-      expect(stats.eventsCaptured).toBe(1);
-    });
-    
-    it('should track events filtered', () => {
-      const script = createMockElement('script', {});
-      
-      capture.start();
-      script.click();
-      
-      const stats = capture.getStats();
-      expect(stats.eventsFiltered).toBe(1);
+      document.body.removeChild(input);
+      debouncingCapture.dispose();
     });
   });
 });
 
 // ============================================================================
-// CONVERSION TESTS
+// UTILITY FUNCTION TESTS
 // ============================================================================
 
-describe('capturedEventToStep', () => {
-  it('should convert click event to step', () => {
-    const captured: CapturedEvent = {
-      type: 'click',
-      target: {
+describe('createEventCapture', () => {
+  it('should create capture with defaults', () => {
+    const capture = createEventCapture();
+    expect(capture).toBeInstanceOf(EventCapture);
+    capture.dispose();
+  });
+  
+  it('should create capture with custom config', () => {
+    const capture = createEventCapture({ inputDebounceMs: 500 });
+    expect(capture.getConfig().inputDebounceMs).toBe(500);
+    capture.dispose();
+  });
+});
+
+describe('isInputElement', () => {
+  it('should return true for input elements', () => {
+    expect(isInputElement(document.createElement('input'))).toBe(true);
+    expect(isInputElement(document.createElement('textarea'))).toBe(true);
+    expect(isInputElement(document.createElement('select'))).toBe(true);
+  });
+  
+  it('should return true for contenteditable', () => {
+    const div = document.createElement('div');
+    div.setAttribute('contenteditable', 'true');
+    expect(isInputElement(div)).toBe(true);
+  });
+  
+  it('should return false for non-input elements', () => {
+    expect(isInputElement(document.createElement('div'))).toBe(false);
+    expect(isInputElement(document.createElement('span'))).toBe(false);
+    expect(isInputElement(document.createElement('button'))).toBe(false);
+  });
+});
+
+describe('isClickableElement', () => {
+  it('should return true for buttons', () => {
+    expect(isClickableElement(document.createElement('button'))).toBe(true);
+  });
+  
+  it('should return true for links', () => {
+    expect(isClickableElement(document.createElement('a'))).toBe(true);
+  });
+  
+  it('should return true for inputs', () => {
+    expect(isClickableElement(document.createElement('input'))).toBe(true);
+  });
+  
+  it('should return true for elements with button role', () => {
+    const div = document.createElement('div');
+    div.setAttribute('role', 'button');
+    expect(isClickableElement(div)).toBe(true);
+  });
+  
+  it('should return true for elements with tabindex', () => {
+    const div = document.createElement('div');
+    div.setAttribute('tabindex', '0');
+    expect(isClickableElement(div)).toBe(true);
+  });
+  
+  it('should return false for plain divs', () => {
+    expect(isClickableElement(document.createElement('div'))).toBe(false);
+  });
+});
+
+describe('getClickableAncestor', () => {
+  it('should return clickable ancestor', () => {
+    const button = document.createElement('button');
+    const span = document.createElement('span');
+    button.appendChild(span);
+    
+    expect(getClickableAncestor(span)).toBe(button);
+  });
+  
+  it('should return element itself if clickable', () => {
+    const button = document.createElement('button');
+    expect(getClickableAncestor(button)).toBe(button);
+  });
+  
+  it('should return null if no clickable ancestor', () => {
+    const div = document.createElement('div');
+    const span = document.createElement('span');
+    div.appendChild(span);
+    
+    expect(getClickableAncestor(span)).toBeNull();
+  });
+});
+
+describe('describeEvent', () => {
+  it('should describe click events', () => {
+    const data: CapturedEventData = {
+      eventType: 'click',
+      actionType: 'click',
+      target: document.createElement('button'),
+      originalEvent: new Event('click'),
+      value: null,
+      isTrusted: true,
+      coordinates: null,
+      timestamp: Date.now(),
+      metadata: {
         tagName: 'button',
-        id: 'btn',
-        classNames: ['primary'],
-        xpath: '/html/body/button',
-        cssSelector: '#btn',
-        aria: {},
-        dataAttrs: {},
-        attributes: {},
-        isVisible: true,
-        isInViewport: true,
+        inputType: null,
+        isContentEditable: false,
+        isFormSubmit: false,
+        isNavigation: false,
+        isSelect2: false,
+        isCheckbox: false,
+        isRadio: false,
+        isChecked: null,
+        key: null,
+        keyCode: null,
+        modifiers: { altKey: false, ctrlKey: false, metaKey: false, shiftKey: false },
+        composedPath: [],
       },
-      timestamp: Date.now(),
-      data: {
-        type: 'click',
-        button: 0,
-        clientX: 100,
-        clientY: 200,
-        pageX: 100,
-        pageY: 200,
-        offsetX: 10,
-        offsetY: 10,
-        ctrlKey: false,
-        shiftKey: false,
-        altKey: false,
-        metaKey: false,
-      },
-      isTrusted: true,
     };
     
-    const step = capturedEventToStep(captured);
-    
-    expect(step.type).toBe('click');
-    expect(step.target?.tagName).toBe('button');
-    expect(step.target?.xpath).toBe('/html/body/button');
+    expect(describeEvent(data)).toBe('Click on <button>');
   });
   
-  it('should convert input event to step', () => {
-    const captured: CapturedEvent = {
-      type: 'input',
-      target: {
-        tagName: 'input',
-        classNames: [],
-        xpath: '/html/body/input',
-        cssSelector: 'input',
-        aria: {},
-        dataAttrs: {},
-        attributes: { type: 'text' },
-        isVisible: true,
-        isInViewport: true,
-      },
-      timestamp: Date.now(),
-      data: {
-        type: 'input',
-        value: 'hello world',
-        isComposing: false,
-      },
+  it('should describe input events', () => {
+    const data: CapturedEventData = {
+      eventType: 'input',
+      actionType: 'input',
+      target: document.createElement('input'),
+      originalEvent: new Event('input'),
+      value: 'hello world',
       isTrusted: true,
+      coordinates: null,
+      timestamp: Date.now(),
+      metadata: {
+        tagName: 'input',
+        inputType: 'text',
+        isContentEditable: false,
+        isFormSubmit: false,
+        isNavigation: false,
+        isSelect2: false,
+        isCheckbox: false,
+        isRadio: false,
+        isChecked: null,
+        key: null,
+        keyCode: null,
+        modifiers: { altKey: false, ctrlKey: false, metaKey: false, shiftKey: false },
+        composedPath: [],
+      },
     };
     
-    const step = capturedEventToStep(captured);
-    
-    expect(step.type).toBe('input');
-    expect(step.value).toBe('hello world');
+    expect(describeEvent(data)).toBe('Type "hello world" in <input>');
   });
   
-  it('should convert keyboard event to step', () => {
-    const captured: CapturedEvent = {
-      type: 'keydown',
-      target: {
-        tagName: 'input',
-        classNames: [],
-        xpath: '/html/body/input',
-        cssSelector: 'input',
-        aria: {},
-        dataAttrs: {},
-        attributes: {},
-        isVisible: true,
-        isInViewport: true,
-      },
-      timestamp: Date.now(),
-      data: {
-        type: 'keydown',
-        key: 'Enter',
-        code: 'Enter',
-        keyCode: 13,
-        ctrlKey: false,
-        shiftKey: false,
-        altKey: false,
-        metaKey: false,
-        repeat: false,
-        isComposing: false,
-      },
+  it('should truncate long values', () => {
+    const data: CapturedEventData = {
+      eventType: 'input',
+      actionType: 'input',
+      target: document.createElement('input'),
+      originalEvent: new Event('input'),
+      value: 'this is a very long value that should be truncated',
       isTrusted: true,
+      coordinates: null,
+      timestamp: Date.now(),
+      metadata: {
+        tagName: 'input',
+        inputType: 'text',
+        isContentEditable: false,
+        isFormSubmit: false,
+        isNavigation: false,
+        isSelect2: false,
+        isCheckbox: false,
+        isRadio: false,
+        isChecked: null,
+        key: null,
+        keyCode: null,
+        modifiers: { altKey: false, ctrlKey: false, metaKey: false, shiftKey: false },
+        composedPath: [],
+      },
     };
     
-    const step = capturedEventToStep(captured);
-    
-    expect(step.type).toBe('keypress');
-    expect(step.value).toBe('Enter');
+    const description = describeEvent(data);
+    expect(description).toContain('...');
+    expect(description.length).toBeLessThan(50);
   });
 });
 
 // ============================================================================
-// XPATH AND CSS SELECTOR TESTS
+// CONFIGURATION TESTS
 // ============================================================================
 
-describe('EventCapture selectors', () => {
-  let capture: EventCapture;
-  
-  beforeEach(() => {
-    capture = createEventCapture({
-      onCapture: () => {},
-    });
-  });
-  
-  afterEach(() => {
-    cleanupElements();
-  });
-  
-  describe('generateXPath', () => {
-    it('should generate valid XPath', () => {
-      const div = createMockElement('div', {});
-      const button = document.createElement('button');
-      div.appendChild(button);
-      
-      const xpath = capture.generateXPath(button);
-      
-      expect(xpath).toMatch(/^\/.*button$/);
-    });
-    
-    it('should handle multiple siblings', () => {
-      const div = createMockElement('div', {});
-      const span1 = document.createElement('span');
-      const span2 = document.createElement('span');
-      div.appendChild(span1);
-      div.appendChild(span2);
-      
-      const xpath1 = capture.generateXPath(span1);
-      const xpath2 = capture.generateXPath(span2);
-      
-      expect(xpath1).toContain('span[1]');
-      expect(xpath2).toContain('span[2]');
-    });
-  });
-  
-  describe('generateCssSelector', () => {
-    it('should prefer ID', () => {
-      const button = createMockElement('button', { id: 'my-id' });
-      
-      const selector = capture.generateCssSelector(button);
-      
-      expect(selector).toBe('#my-id');
-    });
-    
-    it('should use data-testid', () => {
-      const button = createMockElement('button', {
-        'data-testid': 'test-button',
-      });
-      
-      const selector = capture.generateCssSelector(button);
-      
-      expect(selector).toContain('data-testid');
-    });
-    
-    it('should use classes when no ID', () => {
-      const button = createMockElement('button', {
-        className: 'btn primary',
-      });
-      
-      const selector = capture.generateCssSelector(button);
-      
-      expect(selector).toContain('btn');
-    });
+describe('DEFAULT_CAPTURE_CONFIG', () => {
+  it('should have sensible defaults', () => {
+    expect(DEFAULT_CAPTURE_CONFIG.filterSyntheticEvents).toBe(true);
+    expect(DEFAULT_CAPTURE_CONFIG.inputDebounceMs).toBeGreaterThan(0);
+    expect(DEFAULT_CAPTURE_CONFIG.captureCoordinates).toBe(true);
+    expect(DEFAULT_CAPTURE_CONFIG.resolveSelect2).toBe(true);
   });
 });
