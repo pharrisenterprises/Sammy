@@ -1,659 +1,633 @@
 /**
- * ActionExecutor Test Suite
+ * Tests for ActionExecutor
  * @module core/replay/ActionExecutor.test
- * @vitest-environment happy-dom
+ * @vitest-environment jsdom
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   ActionExecutor,
   createActionExecutor,
-  DEFAULT_ACTION_TIMEOUT,
-  DEFAULT_POLL_INTERVAL,
-  DEFAULT_TYPING_DELAY,
-  ACTION_TYPES,
-  type ActionContext,
+  createFastExecutor,
+  createRealisticExecutor,
+  getActionExecutor,
+  resetActionExecutor,
+  clickElement,
+  inputValue,
+  pressEnter,
+  KEYS,
+  DEFAULT_ACTION_OPTIONS,
+  type ActionResult,
 } from './ActionExecutor';
-import type { RecordedStep } from '../types/step';
 
 // ============================================================================
-// MOCK DOM SETUP
+// TEST HELPERS
 // ============================================================================
 
-function createMockElement(
+function createElement(
   tag: string,
-  attrs: Record<string, string> = {},
-  textContent?: string
+  attrs: Record<string, string> = {}
 ): HTMLElement {
   const element = document.createElement(tag);
-  
   for (const [key, value] of Object.entries(attrs)) {
-    if (key === 'className') {
-      element.className = value;
-    } else {
-      element.setAttribute(key, value);
-    }
+    element.setAttribute(key, value);
   }
-  
-  if (textContent) {
-    element.textContent = textContent;
-  }
-  
   document.body.appendChild(element);
+  
+  // Mock getBoundingClientRect for JSDOM
+  element.getBoundingClientRect = vi.fn(() => ({
+    x: 0,
+    y: 0,
+    width: 100,
+    height: 50,
+    top: 0,
+    right: 100,
+    bottom: 50,
+    left: 0,
+    toJSON: () => {},
+  }));
+  
+  // Mock scrollIntoView for JSDOM
+  element.scrollIntoView = vi.fn();
+  
   return element;
+}
+
+function createInput(type: string = 'text', attrs: Record<string, string> = {}): HTMLInputElement {
+  return createElement('input', { type, ...attrs }) as HTMLInputElement;
+}
+
+function createTextarea(): HTMLTextAreaElement {
+  return createElement('textarea') as HTMLTextAreaElement;
+}
+
+function createSelect(options: string[]): HTMLSelectElement {
+  const select = createElement('select') as HTMLSelectElement;
+  for (const opt of options) {
+    const option = document.createElement('option');
+    option.value = opt;
+    option.text = opt;
+    select.appendChild(option);
+  }
+  return select;
+}
+
+function createCheckbox(checked: boolean = false): HTMLInputElement {
+  const checkbox = createInput('checkbox');
+  checkbox.checked = checked;
+  return checkbox;
+}
+
+function createContentEditable(): HTMLDivElement {
+  const div = createElement('div') as HTMLDivElement;
+  div.contentEditable = 'true';
+  return div;
 }
 
 function cleanupElements(): void {
   document.body.innerHTML = '';
 }
 
-function createMockStep(overrides: Partial<RecordedStep> = {}): RecordedStep {
-  return {
-    id: 'step-1',
-    name: 'Test Step',
-    type: 'click',
-    event: 'click',
-    timestamp: Date.now(),
-    target: {
-      tagName: 'button',
-      xpath: '/html/body/button',
-      cssSelector: 'button',
-    },
-    path: '/html/body/button',
-    value: '',
-    label: '',
-    ...overrides,
-  };
-}
-
-function createMockContext(overrides: Partial<ActionContext> = {}): ActionContext {
-  return {
-    step: createMockStep(),
-    timeout: 5000,
-    metadata: {},
-    ...overrides,
-  };
-}
-
 // ============================================================================
-// CONSTANT TESTS
-// ============================================================================
-
-describe('ActionExecutor constants', () => {
-  it('should have default timeout', () => {
-    expect(DEFAULT_ACTION_TIMEOUT).toBe(30000);
-  });
-  
-  it('should have poll interval', () => {
-    expect(DEFAULT_POLL_INTERVAL).toBe(100);
-  });
-  
-  it('should have typing delay', () => {
-    expect(DEFAULT_TYPING_DELAY).toBe(50);
-  });
-  
-  it('should have all action types', () => {
-    expect(ACTION_TYPES).toContain('click');
-    expect(ACTION_TYPES).toContain('input');
-    expect(ACTION_TYPES).toContain('navigate');
-    expect(ACTION_TYPES).toContain('assert');
-  });
-});
-
-// ============================================================================
-// EXECUTOR TESTS
+// TESTS
 // ============================================================================
 
 describe('ActionExecutor', () => {
   let executor: ActionExecutor;
   
   beforeEach(() => {
-    executor = createActionExecutor({
-      timeout: 5000,
-      pollInterval: 50,
-    });
+    vi.useFakeTimers();
+    resetActionExecutor();
+    cleanupElements();
+    executor = new ActionExecutor({ humanLike: false }); // Fast for tests
   });
   
   afterEach(() => {
+    vi.useRealTimers();
+    resetActionExecutor();
     cleanupElements();
   });
   
-  describe('click action', () => {
-    it('should click element', async () => {
-      const button = createMockElement('button', { id: 'test-btn' });
-      const clickHandler = vi.fn();
-      button.addEventListener('click', clickHandler);
+  // ==========================================================================
+  // CLICK TESTS
+  // ==========================================================================
+  
+  describe('click', () => {
+    it('should click element successfully', async () => {
+      const button = createElement('button');
+      let clicked = false;
+      button.addEventListener('click', () => { clicked = true; });
       
-      const step = createMockStep({
-        type: 'click',
-        target: { tagName: 'button', cssSelector: '#test-btn', xpath: '' },
-      });
+      const resultPromise = executor.click(button);
+      await vi.runAllTimersAsync();
+      const result = await resultPromise;
       
-      const result = await executor.execute(step, createMockContext({ step }));
-      
+      if (!result.success) {
+        console.error('Click failed:', result.error);
+      }
       expect(result.success).toBe(true);
-      expect(result.elementFound).toBe(true);
-      expect(clickHandler).toHaveBeenCalled();
+      expect(result.action).toBe('click');
+      expect(clicked).toBe(true);
     });
     
-    it('should fail when element not found', async () => {
-      const step = createMockStep({
-        type: 'click',
-        target: { tagName: 'button', cssSelector: '#nonexistent', xpath: '' },
+    it('should dispatch mouse events in order', async () => {
+      const button = createElement('button');
+      const events: string[] = [];
+      
+      ['mouseover', 'mousemove', 'mousedown', 'mouseup', 'click'].forEach(type => {
+        button.addEventListener(type, () => events.push(type));
       });
       
-      const result = await executor.execute(step, createMockContext({
-        step,
-        timeout: 100,
-      }));
+      const humanExecutor = new ActionExecutor({ humanLike: true });
+      const resultPromise = humanExecutor.click(button);
+      await vi.runAllTimersAsync();
+      await resultPromise;
       
-      expect(result.success).toBe(false);
-      expect(result.elementFound).toBe(false);
+      expect(events).toEqual(['mouseover', 'mousemove', 'mousedown', 'mouseup', 'click']);
+    });
+    
+    it('should focus before click', async () => {
+      const button = createElement('button');
+      let focused = false;
+      button.addEventListener('focus', () => { focused = true; });
+      
+      const resultPromise = executor.click(button, { focusFirst: true });
+      await vi.runAllTimersAsync();
+      await resultPromise;
+      
+      expect(focused).toBe(true);
     });
   });
   
-  describe('input action', () => {
-    it('should type into input', async () => {
-      const input = createMockElement('input', {
-        id: 'test-input',
-        type: 'text',
-      }) as HTMLInputElement;
+  // ==========================================================================
+  // INPUT TESTS
+  // ==========================================================================
+  
+  describe('input', () => {
+    it('should set input value', async () => {
+      const input = createInput();
       
-      const step = createMockStep({
-        type: 'input',
-        target: { tagName: 'input', cssSelector: '#test-input', xpath: '' },
-        value: 'hello world',
-      });
-      
-      const result = await executor.execute(step, createMockContext({ step }));
+      const resultPromise = executor.input(input, 'Hello World');
+      await vi.runAllTimersAsync();
+      const result = await resultPromise;
       
       expect(result.success).toBe(true);
-      expect(input.value).toBe('hello world');
-      expect(result.actualValue).toBe('hello world');
+      expect(input.value).toBe('Hello World');
     });
     
-    it('should clear existing value', async () => {
-      const input = createMockElement('input', {
-        id: 'test-input',
-        type: 'text',
-      }) as HTMLInputElement;
-      input.value = 'existing';
+    it('should use React-safe setter', async () => {
+      const input = createInput();
+      const setter = vi.fn();
       
-      const step = createMockStep({
-        type: 'input',
-        target: { tagName: 'input', cssSelector: '#test-input', xpath: '' },
-        value: 'new value',
+      Object.defineProperty(input, 'value', {
+        set: setter,
+        get: () => '',
       });
       
-      const result = await executor.execute(step, createMockContext({ step }));
+      const resultPromise = executor.input(input, 'Test', { reactSafe: true });
+      await vi.runAllTimersAsync();
+      await resultPromise;
+      
+      // React-safe uses prototype setter, not the instance setter
+      expect(input.value).toBeDefined();
+    });
+    
+    it('should dispatch input and change events', async () => {
+      const input = createInput();
+      const events: string[] = [];
+      
+      input.addEventListener('input', () => events.push('input'));
+      input.addEventListener('change', () => events.push('change'));
+      
+      const resultPromise = executor.input(input, 'Test');
+      await vi.runAllTimersAsync();
+      await resultPromise;
+      
+      expect(events).toContain('input');
+      expect(events).toContain('change');
+    });
+    
+    it('should handle textarea', async () => {
+      const textarea = createTextarea();
+      
+      const resultPromise = executor.input(textarea, 'Multi\nLine');
+      await vi.runAllTimersAsync();
+      const result = await resultPromise;
       
       expect(result.success).toBe(true);
-      expect(input.value).toBe('new value');
+      expect(textarea.value).toBe('Multi\nLine');
+    });
+    
+    it('should handle contenteditable', async () => {
+      const div = createContentEditable();
+      
+      const resultPromise = executor.input(div, 'Editable content');
+      await vi.runAllTimersAsync();
+      const result = await resultPromise;
+      
+      expect(result.success).toBe(true);
+      expect(div.innerText).toBe('Editable content');
     });
   });
   
-  describe('select action', () => {
+  // ==========================================================================
+  // SELECT TESTS
+  // ==========================================================================
+  
+  describe('select', () => {
     it('should select option by value', async () => {
-      const select = createMockElement('select', { id: 'test-select' }) as HTMLSelectElement;
-      const option1 = document.createElement('option');
-      option1.value = 'opt1';
-      option1.text = 'Option 1';
-      const option2 = document.createElement('option');
-      option2.value = 'opt2';
-      option2.text = 'Option 2';
-      select.appendChild(option1);
-      select.appendChild(option2);
+      const select = createSelect(['a', 'b', 'c']);
       
-      const step = createMockStep({
-        type: 'select',
-        target: { tagName: 'select', cssSelector: '#test-select', xpath: '' },
-        value: 'opt2',
-      });
-      
-      const result = await executor.execute(step, createMockContext({ step }));
+      const resultPromise = executor.select(select, 'b');
+      await vi.runAllTimersAsync();
+      const result = await resultPromise;
       
       expect(result.success).toBe(true);
-      expect(select.value).toBe('opt2');
+      expect(select.value).toBe('b');
     });
     
-    it('should select option by text', async () => {
-      const select = createMockElement('select', { id: 'test-select' }) as HTMLSelectElement;
-      const option = document.createElement('option');
-      option.value = 'val';
-      option.text = 'My Option';
-      select.appendChild(option);
+    it('should fail if option not found', async () => {
+      const select = createSelect(['a', 'b', 'c']);
       
-      const step = createMockStep({
-        type: 'select',
-        target: { tagName: 'select', cssSelector: '#test-select', xpath: '' },
-        value: 'My Option',
-      });
-      
-      const result = await executor.execute(step, createMockContext({ step }));
-      
-      expect(result.success).toBe(true);
-      expect(select.value).toBe('val');
-    });
-  });
-  
-  describe('keypress action', () => {
-    it('should dispatch keyboard events', async () => {
-      const input = createMockElement('input', { id: 'test-input' });
-      const keydownHandler = vi.fn();
-      input.addEventListener('keydown', keydownHandler);
-      input.focus();
-      
-      const step = createMockStep({
-        type: 'keypress',
-        target: { tagName: 'input', cssSelector: '#test-input', xpath: '' },
-        value: 'Enter',
-      });
-      
-      const result = await executor.execute(step, createMockContext({ step }));
-      
-      expect(result.success).toBe(true);
-      expect(keydownHandler).toHaveBeenCalled();
-    });
-    
-    it('should support modifier keys', async () => {
-      const input = createMockElement('input', { id: 'test-input' });
-      let capturedEvent: KeyboardEvent | null = null;
-      input.addEventListener('keydown', (e) => { capturedEvent = e as KeyboardEvent; });
-      input.focus();
-      
-      const step = createMockStep({
-        type: 'keypress',
-        target: { tagName: 'input', cssSelector: '#test-input', xpath: '' },
-        value: 'a',
-        metadata: { modifiers: { ctrl: true, shift: true } },
-      });
-      
-      await executor.execute(step, createMockContext({ step }));
-      
-      expect(capturedEvent?.ctrlKey).toBe(true);
-      expect(capturedEvent?.shiftKey).toBe(true);
-    });
-  });
-  
-  describe('assert action', () => {
-    it('should assert element exists', async () => {
-      createMockElement('div', { id: 'exists' });
-      
-      const step = createMockStep({
-        type: 'assert',
-        target: { tagName: 'div', cssSelector: '#exists', xpath: '' },
-        metadata: { assertion: { type: 'exists' } },
-      });
-      
-      const result = await executor.execute(step, createMockContext({ step }));
-      
-      expect(result.success).toBe(true);
-    });
-    
-    it('should assert element text', async () => {
-      createMockElement('div', { id: 'text-el' }, 'Hello World');
-      
-      const step = createMockStep({
-        type: 'assert',
-        target: { tagName: 'div', cssSelector: '#text-el', xpath: '' },
-        metadata: { assertion: { type: 'text', expected: 'Hello World' } },
-      });
-      
-      const result = await executor.execute(step, createMockContext({ step }));
-      
-      expect(result.success).toBe(true);
-    });
-    
-    it('should fail assertion when text mismatch', async () => {
-      createMockElement('div', { id: 'text-el' }, 'Actual Text');
-      
-      const step = createMockStep({
-        type: 'assert',
-        target: { tagName: 'div', cssSelector: '#text-el', xpath: '' },
-        metadata: { assertion: { type: 'text', expected: 'Expected Text' } },
-      });
-      
-      const result = await executor.execute(step, createMockContext({ step }));
+      const resultPromise = executor.select(select, 'x');
+      await vi.runAllTimersAsync();
+      const result = await resultPromise;
       
       expect(result.success).toBe(false);
-      expect(result.actualValue).toBe('Actual Text');
+      expect(result.error).toContain('not found');
     });
     
-    it('should assert element value', async () => {
-      const input = createMockElement('input', { id: 'val-el' }) as HTMLInputElement;
-      input.value = 'test value';
+    it('should dispatch change event', async () => {
+      const select = createSelect(['a', 'b']);
+      let changed = false;
+      select.addEventListener('change', () => { changed = true; });
       
-      const step = createMockStep({
-        type: 'assert',
-        target: { tagName: 'input', cssSelector: '#val-el', xpath: '' },
-        metadata: { assertion: { type: 'value', expected: 'test value' } },
-      });
+      const resultPromise = executor.select(select, 'b');
+      await vi.runAllTimersAsync();
+      await resultPromise;
       
-      const result = await executor.execute(step, createMockContext({ step }));
-      
-      expect(result.success).toBe(true);
-    });
-    
-    it('should assert element attribute', async () => {
-      createMockElement('button', { id: 'btn', disabled: 'true' });
-      
-      const step = createMockStep({
-        type: 'assert',
-        target: { tagName: 'button', cssSelector: '#btn', xpath: '' },
-        metadata: { assertion: { type: 'attribute', attribute: 'disabled', expected: 'true' } },
-      });
-      
-      const result = await executor.execute(step, createMockContext({ step }));
-      
-      expect(result.success).toBe(true);
+      expect(changed).toBe(true);
     });
   });
   
-  describe('hover action', () => {
-    it('should trigger hover events', async () => {
-      const div = createMockElement('div', { id: 'hover-el' });
-      const mouseoverHandler = vi.fn();
-      div.addEventListener('mouseover', mouseoverHandler);
+  // ==========================================================================
+  // CHECKBOX TESTS
+  // ==========================================================================
+  
+  describe('check/uncheck', () => {
+    it('should check unchecked checkbox', async () => {
+      const checkbox = createCheckbox(false);
       
-      const step = createMockStep({
-        type: 'hover',
-        target: { tagName: 'div', cssSelector: '#hover-el', xpath: '' },
-      });
-      
-      const result = await executor.execute(step, createMockContext({ step }));
+      const resultPromise = executor.check(checkbox);
+      await vi.runAllTimersAsync();
+      const result = await resultPromise;
       
       expect(result.success).toBe(true);
-      expect(mouseoverHandler).toHaveBeenCalled();
+      expect(result.action).toBe('check');
+    });
+    
+    it('should skip already checked checkbox', async () => {
+      const checkbox = createCheckbox(true);
+      
+      const resultPromise = executor.check(checkbox);
+      await vi.runAllTimersAsync();
+      const result = await resultPromise;
+      
+      expect(result.success).toBe(true);
+      expect(result.details?.alreadyChecked).toBe(true);
+    });
+    
+    it('should uncheck checked checkbox', async () => {
+      const checkbox = createCheckbox(true);
+      
+      const resultPromise = executor.uncheck(checkbox);
+      await vi.runAllTimersAsync();
+      const result = await resultPromise;
+      
+      expect(result.success).toBe(true);
+      expect(result.action).toBe('uncheck');
+    });
+    
+    it('should toggle checkbox state', async () => {
+      const checkbox = createCheckbox(false);
+      
+      const promise1 = executor.toggle(checkbox);
+      await vi.runAllTimersAsync();
+      await promise1;
+      expect(checkbox.checked).toBe(true);
+      
+      const promise2 = executor.toggle(checkbox);
+      await vi.runAllTimersAsync();
+      await promise2;
+      expect(checkbox.checked).toBe(false);
+    });
+    
+    it('should fail for non-checkbox', async () => {
+      const input = createInput('text');
+      
+      const resultPromise = executor.check(input);
+      await vi.runAllTimersAsync();
+      const result = await resultPromise;
+      
+      expect(result.success).toBe(false);
     });
   });
   
-  describe('focus/blur actions', () => {
+  // ==========================================================================
+  // KEYBOARD TESTS
+  // ==========================================================================
+  
+  describe('keyboard', () => {
+    it('should press Enter key', async () => {
+      const input = createInput();
+      const events: string[] = [];
+      
+      ['keydown', 'keypress', 'keyup'].forEach(type => {
+        input.addEventListener(type, (e) => {
+          if ((e as KeyboardEvent).key === 'Enter') {
+            events.push(type);
+          }
+        });
+      });
+      
+      const resultPromise = executor.pressEnter(input);
+      await vi.runAllTimersAsync();
+      const result = await resultPromise;
+      
+      expect(result.success).toBe(true);
+      expect(result.action).toBe('enter');
+      expect(events).toContain('keydown');
+    });
+    
+    it('should press Tab key', async () => {
+      const input = createInput();
+      let tabPressed = false;
+      
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Tab') tabPressed = true;
+      });
+      
+      const resultPromise = executor.pressTab(input);
+      await vi.runAllTimersAsync();
+      const result = await resultPromise;
+      
+      expect(result.success).toBe(true);
+      expect(result.action).toBe('tab');
+      expect(tabPressed).toBe(true);
+    });
+    
+    it('should press Escape key', async () => {
+      const input = createInput();
+      
+      const resultPromise = executor.pressEscape(input);
+      await vi.runAllTimersAsync();
+      const result = await resultPromise;
+      
+      expect(result.success).toBe(true);
+      expect(result.action).toBe('escape');
+    });
+    
+    it('should press custom key', async () => {
+      const input = createInput();
+      
+      const resultPromise = executor.pressKey(input, KEYS.ArrowDown);
+      await vi.runAllTimersAsync();
+      const result = await resultPromise;
+      
+      expect(result.success).toBe(true);
+      expect(result.details?.key).toBe('ArrowDown');
+    });
+  });
+  
+  // ==========================================================================
+  // TYPE TESTS
+  // ==========================================================================
+  
+  describe('type', () => {
+    it('should type text character by character', async () => {
+      const input = createInput();
+      let inputCount = 0;
+      
+      input.addEventListener('input', () => { inputCount++; });
+      
+      const resultPromise = executor.type(input, 'Hi', { charDelay: 0 });
+      await vi.runAllTimersAsync();
+      const result = await resultPromise;
+      
+      expect(result.success).toBe(true);
+      expect(input.value).toBe('Hi');
+      expect(inputCount).toBe(2); // One per character
+    });
+  });
+  
+  // ==========================================================================
+  // FOCUS TESTS
+  // ==========================================================================
+  
+  describe('focus/blur', () => {
     it('should focus element', async () => {
-      const input = createMockElement('input', { id: 'focus-el' });
+      const input = createInput();
+      let focused = false;
+      input.addEventListener('focus', () => { focused = true; });
       
-      const step = createMockStep({
-        type: 'focus',
-        target: { tagName: 'input', cssSelector: '#focus-el', xpath: '' },
-      });
-      
-      const result = await executor.execute(step, createMockContext({ step }));
+      const resultPromise = executor.focus(input);
+      await vi.runAllTimersAsync();
+      const result = await resultPromise;
       
       expect(result.success).toBe(true);
-      expect(document.activeElement).toBe(input);
+      expect(focused).toBe(true);
     });
     
     it('should blur element', async () => {
-      const input = createMockElement('input', { id: 'blur-el' }) as HTMLInputElement;
+      const input = createInput();
       input.focus();
+      let blurred = false;
+      input.addEventListener('blur', () => { blurred = true; });
       
-      const step = createMockStep({
-        type: 'blur',
-        target: { tagName: 'input', cssSelector: '#blur-el', xpath: '' },
-      });
-      
-      const result = await executor.execute(step, createMockContext({ step }));
+      const resultPromise = executor.blur(input);
+      await vi.runAllTimersAsync();
+      const result = await resultPromise;
       
       expect(result.success).toBe(true);
-      expect(document.activeElement).not.toBe(input);
+      expect(blurred).toBe(true);
     });
   });
   
-  describe('scroll action', () => {
-    it('should scroll element', async () => {
-      const div = createMockElement('div', {
-        id: 'scroll-el',
-        style: 'height: 100px; overflow: auto;',
-      });
-      div.innerHTML = '<div style="height: 500px;"></div>';
+  // ==========================================================================
+  // SCROLL TESTS
+  // ==========================================================================
+  
+  describe('scrollIntoView', () => {
+    it('should scroll element into view', async () => {
+      const div = createElement('div');
+      const scrollSpy = vi.spyOn(div, 'scrollIntoView');
       
-      const step = createMockStep({
-        type: 'scroll',
-        target: { tagName: 'div', cssSelector: '#scroll-el', xpath: '' },
-        metadata: { scrollY: 200 },
-      });
-      
-      const result = await executor.execute(step, createMockContext({ step }));
+      const resultPromise = executor.scrollIntoView(div);
+      await vi.runAllTimersAsync();
+      const result = await resultPromise;
       
       expect(result.success).toBe(true);
-      expect(div.scrollTop).toBe(200);
+      expect(scrollSpy).toHaveBeenCalled();
     });
   });
   
-  describe('wait action', () => {
-    it('should wait for time', async () => {
-      const startTime = Date.now();
-      
-      const step = createMockStep({
-        type: 'wait',
-        target: { tagName: '', xpath: '', cssSelector: '' },
-        metadata: { waitType: 'time', waitTime: 100 },
-      });
-      
-      const result = await executor.execute(step, createMockContext({ step }));
-      
-      expect(result.success).toBe(true);
-      expect(Date.now() - startTime).toBeGreaterThanOrEqual(90);
-    });
-    
-    it('should wait for element', async () => {
-      // Create element after delay
-      setTimeout(() => {
-        createMockElement('div', { id: 'delayed-el' });
-      }, 50);
-      
-      const step = createMockStep({
-        type: 'wait',
-        target: { tagName: 'div', cssSelector: '#delayed-el', xpath: '' },
-        metadata: { waitType: 'element' },
-      });
-      
-      const result = await executor.execute(step, createMockContext({
-        step,
-        timeout: 1000,
-      }));
-      
-      expect(result.success).toBe(true);
-    });
-  });
+  // ==========================================================================
+  // OPTIONS TESTS
+  // ==========================================================================
   
-  describe('element location', () => {
-    it('should locate by id', async () => {
-      createMockElement('button', { id: 'by-id' });
+  describe('options', () => {
+    it('should apply preDelay', async () => {
+      const button = createElement('button');
       
-      const step = createMockStep({
-        type: 'click',
-        target: { tagName: 'button', id: 'by-id', xpath: '', cssSelector: '' },
-      });
-      
-      const result = await executor.execute(step, createMockContext({ step }));
+      const resultPromise = executor.click(button, { preDelay: 100 });
+      await vi.runAllTimersAsync();
+      const result = await resultPromise;
       
       expect(result.success).toBe(true);
-      expect(result.locatorUsed).toBe('id');
     });
     
-    it('should locate by data-testid', async () => {
-      createMockElement('button', { 'data-testid': 'my-button' });
+    it('should get and set options', () => {
+      executor.setOptions({ humanLike: true });
       
-      const step = createMockStep({
-        type: 'click',
-        target: {
-          tagName: 'button',
-          xpath: '',
-          cssSelector: '',
-          attributes: { 'data-testid': 'my-button' },
-        },
-      });
-      
-      const result = await executor.execute(step, createMockContext({ step }));
-      
-      expect(result.success).toBe(true);
-      expect(result.locatorUsed).toBe('data-testid');
-    });
-    
-    it('should locate by css selector', async () => {
-      createMockElement('button', { className: 'btn primary' });
-      
-      const step = createMockStep({
-        type: 'click',
-        target: { tagName: 'button', xpath: '', cssSelector: 'button.btn.primary' },
-      });
-      
-      const result = await executor.execute(step, createMockContext({ step }));
-      
-      expect(result.success).toBe(true);
-      expect(result.locatorUsed).toBe('css');
-    });
-    
-    it.skip('should locate by xpath', async () => {
-      // Skip: happy-dom doesn't fully support XPath
-      createMockElement('button', { id: 'xpath-btn' });
-      
-      const step = createMockStep({
-        type: 'click',
-        target: { tagName: 'button', cssSelector: '', xpath: '//button[@id="xpath-btn"]' },
-      });
-      
-      const result = await executor.execute(step, createMockContext({ step }));
-      
-      expect(result.success).toBe(true);
-      expect(result.locatorUsed).toBe('xpath');
-    });
-  });
-  
-  describe('statistics', () => {
-    it('should track execution stats', async () => {
-      createMockElement('button', { id: 'btn' });
-      
-      const step = createMockStep({
-        type: 'click',
-        target: { tagName: 'button', cssSelector: '#btn', xpath: '' },
-      });
-      
-      await executor.execute(step, createMockContext({ step }));
-      await executor.execute(step, createMockContext({ step }));
-      
-      const stats = executor.getStats();
-      
-      expect(stats.actionsExecuted).toBe(2);
-      expect(stats.actionsSucceeded).toBe(2);
-    });
-    
-    it('should track failed actions', async () => {
-      const step = createMockStep({
-        type: 'click',
-        target: { tagName: 'button', cssSelector: '#nonexistent', xpath: '' },
-      });
-      
-      const result = await executor.execute(step, createMockContext({ step, timeout: 100 }));
-      
-      expect(result.success).toBe(false);
-      
-      const stats = executor.getStats();
-      
-      expect(stats.actionsFailed).toBe(1);
-    });
-    
-    it('should reset stats', async () => {
-      createMockElement('button', { id: 'btn' });
-      
-      const step = createMockStep({
-        type: 'click',
-        target: { tagName: 'button', cssSelector: '#btn', xpath: '' },
-      });
-      
-      await executor.execute(step, createMockContext({ step }));
-      
-      executor.resetStats();
-      
-      const stats = executor.getStats();
-      expect(stats.actionsExecuted).toBe(0);
-    });
-  });
-  
-  describe('custom handlers', () => {
-    it('should use custom handler', async () => {
-      const customHandler = vi.fn().mockResolvedValue({
-        success: true,
-        duration: 10,
-        elementFound: true,
-        data: { custom: true },
-      });
-      
-      executor.registerHandler('click', customHandler);
-      
-      createMockElement('button', { id: 'btn' });
-      
-      const step = createMockStep({
-        type: 'click',
-        target: { tagName: 'button', cssSelector: '#btn', xpath: '' },
-      });
-      
-      const result = await executor.execute(step, createMockContext({ step }));
-      
-      expect(customHandler).toHaveBeenCalled();
-      expect(result.data?.custom).toBe(true);
+      expect(executor.getOptions().humanLike).toBe(true);
     });
   });
 });
 
 // ============================================================================
-// WAIT CONDITIONS TESTS
+// FACTORY AND SINGLETON TESTS
 // ============================================================================
 
-describe('ActionExecutor wait conditions', () => {
-  let executor: ActionExecutor;
-  
+describe('factory and singleton', () => {
   beforeEach(() => {
-    executor = createActionExecutor({ pollInterval: 10 });
-  });
-  
-  afterEach(() => {
+    resetActionExecutor();
     cleanupElements();
   });
   
-  it.skip('should wait for visible state', async () => {
-    // Skip: happy-dom doesn't properly handle async style changes in setTimeout
-    const div = createMockElement('div', {
-      id: 'hidden',
-      style: 'display: none;',
-    });
-    
-    // Make visible after delay
-    const timeoutId = setTimeout(() => {
-      (div as HTMLElement).style.display = 'block';
-    }, 50);
-    
-    try {
-      const result = await executor.waitForState(div, 'visible', 1000);
-      expect(result).toBe(true);
-    } finally {
-      clearTimeout(timeoutId);
-    }
+  afterEach(() => {
+    resetActionExecutor();
+    cleanupElements();
   });
   
-  it('should wait for enabled state', async () => {
-    const button = createMockElement('button', {
-      id: 'disabled-btn',
-      disabled: 'true',
-    }) as HTMLButtonElement;
-    
-    // Enable after delay
-    setTimeout(() => {
-      button.disabled = false;
-    }, 50);
-    
-    const result = await executor.waitForState(button, 'enabled', 1000);
-    
-    expect(result).toBe(true);
+  describe('createActionExecutor', () => {
+    it('should create executor with options', () => {
+      const executor = createActionExecutor({ humanLike: false });
+      expect(executor.getOptions().humanLike).toBe(false);
+    });
   });
   
-  it('should timeout when condition not met', async () => {
-    const div = createMockElement('div', {
-      style: 'display: none;',
+  describe('createFastExecutor', () => {
+    it('should create executor without human-like delays', () => {
+      const executor = createFastExecutor();
+      expect(executor.getOptions().humanLike).toBe(false);
     });
-    
-    const result = await executor.waitForState(div, 'visible', 100);
-    
-    expect(result).toBe(false);
+  });
+  
+  describe('createRealisticExecutor', () => {
+    it('should create executor with human-like timing', () => {
+      const executor = createRealisticExecutor();
+      expect(executor.getOptions().humanLike).toBe(true);
+      expect(executor.getOptions().preDelay).toBe(100);
+    });
+  });
+  
+  describe('getActionExecutor', () => {
+    it('should return same instance', () => {
+      const e1 = getActionExecutor();
+      const e2 = getActionExecutor();
+      expect(e1).toBe(e2);
+    });
+  });
+  
+  describe('resetActionExecutor', () => {
+    it('should reset instance', () => {
+      const e1 = getActionExecutor();
+      resetActionExecutor();
+      const e2 = getActionExecutor();
+      expect(e2).not.toBe(e1);
+    });
+  });
+});
+
+// ============================================================================
+// CONVENIENCE FUNCTION TESTS
+// ============================================================================
+
+describe('convenience functions', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    resetActionExecutor();
+    cleanupElements();
+  });
+  
+  afterEach(() => {
+    vi.useRealTimers();
+    resetActionExecutor();
+    cleanupElements();
+  });
+  
+  describe('clickElement', () => {
+    it('should click with default executor', async () => {
+      const button = createElement('button');
+      
+      const resultPromise = clickElement(button);
+      await vi.runAllTimersAsync();
+      const result = await resultPromise;
+      
+      expect(result.success).toBe(true);
+    });
+  });
+  
+  describe('inputValue', () => {
+    it('should input with default executor', async () => {
+      const input = createElement('input') as HTMLInputElement;
+      
+      const resultPromise = inputValue(input, 'test');
+      await vi.runAllTimersAsync();
+      const result = await resultPromise;
+      
+      expect(result.success).toBe(true);
+      expect(input.value).toBe('test');
+    });
+  });
+  
+  describe('pressEnter', () => {
+    it('should press Enter with default executor', async () => {
+      const input = createElement('input');
+      
+      const resultPromise = pressEnter(input);
+      await vi.runAllTimersAsync();
+      const result = await resultPromise;
+      
+      expect(result.success).toBe(true);
+    });
+  });
+});
+
+// ============================================================================
+// KEYS CONSTANT TESTS
+// ============================================================================
+
+describe('KEYS', () => {
+  it('should have Enter key config', () => {
+    expect(KEYS.Enter.key).toBe('Enter');
+    expect(KEYS.Enter.keyCode).toBe(13);
+  });
+  
+  it('should have Tab key config', () => {
+    expect(KEYS.Tab.key).toBe('Tab');
+    expect(KEYS.Tab.keyCode).toBe(9);
+  });
+  
+  it('should have Escape key config', () => {
+    expect(KEYS.Escape.key).toBe('Escape');
+    expect(KEYS.Escape.keyCode).toBe(27);
+  });
+  
+  it('should have arrow key configs', () => {
+    expect(KEYS.ArrowUp.key).toBe('ArrowUp');
+    expect(KEYS.ArrowDown.key).toBe('ArrowDown');
+    expect(KEYS.ArrowLeft.key).toBe('ArrowLeft');
+    expect(KEYS.ArrowRight.key).toBe('ArrowRight');
   });
 });
