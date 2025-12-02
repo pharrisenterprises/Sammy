@@ -1,701 +1,555 @@
 /**
- * StepBuilder Test Suite
+ * Tests for StepBuilder
  * @module core/recording/StepBuilder.test
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   StepBuilder,
   createStepBuilder,
-  buildStepFromEvent,
+  createLightweightBuilder,
+  getStepBuilder,
+  resetStepBuilder,
   buildClickStep,
   buildInputStep,
   buildNavigationStep,
-  buildAssertStep,
-  DEFAULT_STEP_TIMEOUT,
-  MAX_DESCRIPTION_LENGTH,
-  MAX_VALUE_LENGTH,
-  MERGEABLE_STEP_TYPES,
-  MERGE_WINDOW_MS,
-  STEP_TEMPLATES,
+  createLocatorBundle,
+  DEFAULT_STEP_BUILDER_CONFIG,
+  type Step,
+  type LocatorBundle,
+  type StepEventType,
 } from './StepBuilder';
-import type { CapturedEvent, ElementInfo } from './EventCapture';
-import type { RecordedStep, StepTarget } from '../types/step';
+
+import { LabelDetectorRegistry } from './labels/LabelDetectorRegistry';
+import { LabelResolver } from './labels/LabelResolver';
 
 // ============================================================================
-// MOCK DATA
+// TEST HELPERS
 // ============================================================================
 
-function createMockElementInfo(overrides: Partial<ElementInfo> = {}): ElementInfo {
-  return {
-    tagName: 'button',
-    id: 'test-btn',
-    classNames: ['btn', 'primary'],
-    name: 'submit',
-    textContent: 'Click me',
-    xpath: '/html/body/button',
-    cssSelector: '#test-btn',
-    aria: { 'aria-label': 'Submit button' },
-    dataAttrs: { 'data-testid': 'submit-btn' },
-    attributes: { type: 'submit' },
-    isVisible: true,
-    isInViewport: true,
-    ...overrides,
-  };
-}
-
-function createMockCapturedEvent(overrides: Partial<CapturedEvent> = {}): CapturedEvent {
-  return {
-    type: 'click',
-    target: createMockElementInfo(),
-    timestamp: Date.now(),
-    data: {
-      type: 'click',
-      button: 0,
-      clientX: 100,
-      clientY: 200,
-      pageX: 100,
-      pageY: 200,
-      offsetX: 10,
-      offsetY: 10,
-      ctrlKey: false,
-      shiftKey: false,
-      altKey: false,
-      metaKey: false,
-    },
-    isTrusted: true,
-    ...overrides,
-  };
-}
-
-function createMockTarget(overrides: Partial<StepTarget> = {}): StepTarget {
-  return {
-    tagName: 'button',
-    id: 'test-btn',
-    className: 'btn primary',
-    name: 'submit',
-    xpath: '/html/body/button',
-    cssSelector: '#test-btn',
-    textContent: 'Click me',
-    attributes: {},
-    ...overrides,
-  };
-}
-
-function createMockRecordedStep(overrides: Partial<RecordedStep> = {}): RecordedStep {
-  return {
-    id: 'step-1',
-    name: 'Test Step',
-    event: 'click',
-    path: '/html/body/button',
-    value: '',
-    label: 'Test Button',
-    x: 100,
-    y: 200,
-    type: 'click',
-    timestamp: Date.now(),
-    target: createMockTarget(),
-    ...overrides,
-  };
-}
-
-// ============================================================================
-// CONSTANT TESTS
-// ============================================================================
-
-describe('StepBuilder constants', () => {
-  it('should have default timeout', () => {
-    expect(DEFAULT_STEP_TIMEOUT).toBe(30000);
-  });
+/**
+ * Create a test input element
+ */
+function createTestInput(attrs: Record<string, string> = {}): HTMLInputElement {
+  const input = document.createElement('input');
+  input.type = attrs.type || 'text';
+  input.id = attrs.id || 'test-input';
+  input.name = attrs.name || 'testInput';
+  input.placeholder = attrs.placeholder || 'Enter text';
   
-  it('should have mergeable step types', () => {
-    expect(MERGEABLE_STEP_TYPES).toContain('input');
-    expect(MERGEABLE_STEP_TYPES).toContain('keypress');
-  });
+  if (attrs.value) {
+    input.value = attrs.value;
+  }
   
-  it('should have merge window', () => {
-    expect(MERGE_WINDOW_MS).toBe(500);
-  });
+  for (const [key, value] of Object.entries(attrs)) {
+    if (key.startsWith('data-')) {
+      input.setAttribute(key, value);
+    }
+  }
   
-  it('should have step templates', () => {
-    expect(STEP_TEMPLATES.click).toBeDefined();
-    expect(STEP_TEMPLATES.input).toBeDefined();
-    expect(STEP_TEMPLATES.navigate).toBeDefined();
+  document.body.appendChild(input);
+  return input;
+}
+
+/**
+ * Create a test button element
+ */
+function createTestButton(text: string = 'Submit'): HTMLButtonElement {
+  const button = document.createElement('button');
+  button.textContent = text;
+  button.id = 'test-button';
+  document.body.appendChild(button);
+  return button;
+}
+
+/**
+ * Create a test link element
+ */
+function createTestLink(text: string = 'Click here', href: string = '#'): HTMLAnchorElement {
+  const link = document.createElement('a');
+  link.textContent = text;
+  link.href = href;
+  link.id = 'test-link';
+  document.body.appendChild(link);
+  return link;
+}
+
+/**
+ * Create a mock click event
+ */
+function createClickEvent(): MouseEvent {
+  return new MouseEvent('click', {
+    bubbles: true,
+    cancelable: true,
+    clientX: 100,
+    clientY: 200,
   });
-});
+}
+
+/**
+ * Create a mock input event
+ */
+function createInputEvent(): InputEvent {
+  return new InputEvent('input', {
+    bubbles: true,
+    cancelable: true,
+    data: 'test',
+  });
+}
 
 // ============================================================================
-// BUILDER TESTS
+// TESTS
 // ============================================================================
 
 describe('StepBuilder', () => {
   let builder: StepBuilder;
   
   beforeEach(() => {
-    builder = createStepBuilder();
+    LabelDetectorRegistry.resetInstance();
+    resetStepBuilder();
+    builder = new StepBuilder();
   });
   
+  afterEach(() => {
+    document.body.innerHTML = '';
+    LabelDetectorRegistry.resetInstance();
+    resetStepBuilder();
+  });
+  
+  // ==========================================================================
+  // BASIC BUILDING
+  // ==========================================================================
+  
   describe('basic building', () => {
-    it('should build step with required fields', () => {
-      const step = builder
-        .withType('click')
-        .withTarget(createMockTarget())
-        .build();
+    it('should build step from click', () => {
+      const button = createTestButton('Submit');
+      const step = builder.buildFromClick(button);
       
       expect(step.id).toBeDefined();
-      expect(step.type).toBe('click');
-      expect(step.timestamp).toBeDefined();
-      expect(step.target).toBeDefined();
+      expect(step.event).toBe('click');
+      expect(step.path).toContain('button');
     });
     
+    it('should build step from input', () => {
+      const input = createTestInput({ value: 'test@example.com' });
+      const step = builder.buildFromInput(input, undefined, 'test@example.com');
+      
+      expect(step.event).toBe('input');
+      expect(step.value).toBe('test@example.com');
+    });
+    
+    it('should build step from keyboard enter', () => {
+      const input = createTestInput();
+      const step = builder.buildFromKeyboard(input);
+      
+      expect(step.event).toBe('enter');
+    });
+    
+    it('should build navigation step', () => {
+      const step = builder.buildFromNavigation('https://example.com/page');
+      
+      expect(step.event).toBe('open');
+      expect(step.value).toBe('https://example.com/page');
+      expect(step.name).toContain('Navigate');
+    });
+  });
+  
+  // ==========================================================================
+  // ID GENERATION
+  // ==========================================================================
+  
+  describe('id generation', () => {
     it('should generate unique IDs', () => {
-      const step1 = builder.withType('click').withTarget(createMockTarget()).build();
-      const step2 = builder.withType('click').withTarget(createMockTarget()).build();
+      const button = createTestButton();
+      const step1 = builder.buildFromClick(button);
+      const step2 = builder.buildFromClick(button);
       
       expect(step1.id).not.toBe(step2.id);
     });
     
-    it('should throw without type', () => {
-      expect(() => builder.withTarget(createMockTarget()).build()).toThrow();
+    it('should include sequence number in ID', () => {
+      const button = createTestButton();
+      const step = builder.buildFromClick(button);
+      
+      expect(step.id).toContain('_1_');
     });
     
-    it('should create default target if missing', () => {
-      const step = builder.withType('click').build();
+    it('should increment sequence', () => {
+      const button = createTestButton();
       
-      expect(step.target).toBeDefined();
-      expect(step.target?.tagName).toBe('unknown');
+      expect(builder.getSequence()).toBe(1);
+      builder.buildFromClick(button);
+      expect(builder.getSequence()).toBe(2);
+      builder.buildFromClick(button);
+      expect(builder.getSequence()).toBe(3);
+    });
+    
+    it('should reset sequence', () => {
+      const button = createTestButton();
+      builder.buildFromClick(button);
+      builder.buildFromClick(button);
+      
+      builder.resetSequence();
+      
+      expect(builder.getSequence()).toBe(1);
     });
   });
   
-  describe('from captured event', () => {
-    it('should build step from captured event', () => {
-      const event = createMockCapturedEvent();
-      const step = builder.fromCapturedEvent(event).build();
+  // ==========================================================================
+  // LABEL DETECTION
+  // ==========================================================================
+  
+  describe('label detection', () => {
+    it('should resolve label from placeholder', () => {
+      const input = createTestInput({ placeholder: 'Email Address' });
+      const step = builder.buildFromInput(input);
       
-      expect(step.type).toBe('click');
-      expect(step.target?.tagName).toBe('button');
-      expect(step.timestamp).toBe(event.timestamp);
+      // Label resolution depends on enabled detectors
+      expect(step.label).toBeDefined();
     });
     
-    it('should map event types correctly', () => {
-      const clickEvent = createMockCapturedEvent({ type: 'click' });
-      const inputEvent = createMockCapturedEvent({
-        type: 'input',
-        data: { type: 'input', value: 'test', isComposing: false },
-      });
-      const keyEvent = createMockCapturedEvent({
-        type: 'keydown',
-        data: {
-          type: 'keydown',
-          key: 'Enter',
-          code: 'Enter',
-          keyCode: 13,
-          ctrlKey: false,
-          shiftKey: false,
-          altKey: false,
-          metaKey: false,
-          repeat: false,
-          isComposing: false,
-        },
-      });
+    it('should use default label when resolution fails', () => {
+      // Create element with no label hints
+      const div = document.createElement('div');
+      document.body.appendChild(div);
       
-      expect(builder.fromCapturedEvent(clickEvent).build().type).toBe('click');
-      expect(builder.fromCapturedEvent(inputEvent).build().type).toBe('input');
-      expect(builder.fromCapturedEvent(keyEvent).build().type).toBe('keypress');
+      const step = builder.build({ element: div, eventType: 'click' });
+      
+      expect(step.label).toBe(DEFAULT_STEP_BUILDER_CONFIG.defaultLabel);
     });
     
-    it('should extract value from input event', () => {
-      const event = createMockCapturedEvent({
-        type: 'input',
-        data: { type: 'input', value: 'hello world', isComposing: false },
+    it('should accept label override', () => {
+      const button = createTestButton();
+      const step = builder.build({
+        element: button,
+        eventType: 'click',
+        labelOverride: 'Custom Label',
       });
       
-      const step = builder.fromCapturedEvent(event).build();
-      
-      expect(step.value).toBe('hello world');
-    });
-    
-    it('should extract key from keyboard event', () => {
-      const event = createMockCapturedEvent({
-        type: 'keydown',
-        data: {
-          type: 'keydown',
-          key: 'Enter',
-          code: 'Enter',
-          keyCode: 13,
-          ctrlKey: false,
-          shiftKey: false,
-          altKey: false,
-          metaKey: false,
-          repeat: false,
-          isComposing: false,
-        },
-      });
-      
-      const step = builder.fromCapturedEvent(event).build();
-      
-      expect(step.value).toBe('Enter');
-    });
-    
-    it('should include coordinates in metadata', () => {
-      const event = createMockCapturedEvent();
-      const step = builder.fromCapturedEvent(event).build();
-      
-      expect(step.metadata?.coordinates).toEqual({ x: 100, y: 200 });
-    });
-    
-    it('should include modifier keys in metadata', () => {
-      const event = createMockCapturedEvent({
-        data: {
-          type: 'click',
-          button: 0,
-          clientX: 100,
-          clientY: 200,
-          pageX: 100,
-          pageY: 200,
-          offsetX: 10,
-          offsetY: 10,
-          ctrlKey: true,
-          shiftKey: true,
-          altKey: false,
-          metaKey: false,
-        },
-      });
-      
-      const step = builder.fromCapturedEvent(event).build();
-      
-      expect(step.metadata?.modifiers?.ctrl).toBe(true);
-      expect(step.metadata?.modifiers?.shift).toBe(true);
+      expect(step.label).toBe('Custom Label');
     });
   });
   
-  describe('builder methods', () => {
-    it('should set value', () => {
-      const step = builder
-        .withType('input')
-        .withTarget(createMockTarget())
-        .withValue('test value')
-        .build();
+  // ==========================================================================
+  // NAME GENERATION
+  // ==========================================================================
+  
+  describe('name generation', () => {
+    it('should generate name with click verb', () => {
+      const button = createTestButton('Submit');
+      const step = builder.buildFromClick(button);
       
-      expect(step.value).toBe('test value');
+      expect(step.name).toContain('Click');
     });
     
-    it('should truncate long values', () => {
-      const longValue = 'a'.repeat(MAX_VALUE_LENGTH + 100);
+    it('should generate name with input verb', () => {
+      const input = createTestInput();
+      const step = builder.buildFromInput(input, undefined, 'test');
       
-      const step = builder
-        .withType('input')
-        .withTarget(createMockTarget())
-        .withValue(longValue)
-        .build();
-      
-      expect(step.value?.length).toBe(MAX_VALUE_LENGTH);
+      expect(step.name).toContain('Type in');
     });
     
-    it('should set timestamp', () => {
-      const timestamp = 1234567890;
+    it('should generate name with enter verb', () => {
+      const input = createTestInput();
+      const step = builder.buildFromKeyboard(input);
       
-      const step = builder
-        .withType('click')
-        .withTarget(createMockTarget())
-        .withTimestamp(timestamp)
-        .build();
-      
-      expect(step.timestamp).toBe(timestamp);
-    });
-    
-    it('should set ID', () => {
-      const step = builder
-        .withType('click')
-        .withTarget(createMockTarget())
-        .withId('custom-id')
-        .build();
-      
-      expect(step.id).toBe('custom-id');
-    });
-    
-    it('should set description', () => {
-      const step = builder
-        .withType('click')
-        .withTarget(createMockTarget())
-        .withDescription('Click the submit button')
-        .build();
-      
-      expect(step.metadata?.description).toBe('Click the submit button');
-    });
-    
-    it('should truncate long descriptions', () => {
-      const longDesc = 'a'.repeat(MAX_DESCRIPTION_LENGTH + 100);
-      
-      const step = builder
-        .withType('click')
-        .withTarget(createMockTarget())
-        .withDescription(longDesc)
-        .build();
-      
-      expect(step.metadata?.description?.length).toBeLessThanOrEqual(MAX_DESCRIPTION_LENGTH + 3);
-    });
-    
-    it('should set timeout', () => {
-      const step = builder
-        .withType('click')
-        .withTarget(createMockTarget())
-        .withTimeout(5000)
-        .build();
-      
-      expect(step.metadata?.timeout).toBe(5000);
-    });
-    
-    it('should mark as optional', () => {
-      const step = builder
-        .withType('click')
-        .withTarget(createMockTarget())
-        .asOptional()
-        .build();
-      
-      expect(step.metadata?.optional).toBe(true);
-    });
-    
-    it('should set wait before', () => {
-      const step = builder
-        .withType('click')
-        .withTarget(createMockTarget())
-        .withWaitBefore(1000)
-        .build();
-      
-      expect(step.metadata?.waitBefore).toBe(1000);
-    });
-    
-    it('should set wait after', () => {
-      const step = builder
-        .withType('click')
-        .withTarget(createMockTarget())
-        .withWaitAfter(500)
-        .build();
-      
-      expect(step.metadata?.waitAfter).toBe(500);
-    });
-    
-    it('should set locator bundle', () => {
-      const bundle = {
-        id: 'test-btn',
-        tagName: 'button',
-        xpath: '/html/body/button',
-        cssSelector: '#test-btn',
-        timestamp: Date.now(),
-      };
-      
-      const step = builder
-        .withType('click')
-        .withTarget(createMockTarget())
-        .withLocatorBundle(bundle as any)
-        .build();
-      
-      expect(step.locatorBundle).toBe(bundle);
-    });
-    
-    it('should set screenshot', () => {
-      const step = builder
-        .withType('click')
-        .withTarget(createMockTarget())
-        .withScreenshot('data:image/png;base64,xxx')
-        .build();
-      
-      expect(step.screenshot).toBe('data:image/png;base64,xxx');
-    });
-    
-    it('should apply template', () => {
-      const step = builder
-        .fromTemplate(STEP_TEMPLATES.click)
-        .withTarget(createMockTarget())
-        .build();
-      
-      expect(step.type).toBe('click');
-    });
-    
-    it('should reset between builds', () => {
-      const step1 = builder
-        .withType('click')
-        .withTarget(createMockTarget())
-        .withValue('first')
-        .build();
-      
-      const step2 = builder
-        .withType('input')
-        .withTarget(createMockTarget())
-        .build();
-      
-      expect(step1.value).toBe('first');
-      expect(step2.value).toBeUndefined();
+      expect(step.name).toContain('Press Enter');
     });
   });
   
-  describe('auto-generated descriptions', () => {
-    it('should generate click description', () => {
-      const step = builder
-        .withType('click')
-        .withTarget(createMockTarget({ id: 'submit-btn' }))
-        .build();
+  // ==========================================================================
+  // XPATH GENERATION
+  // ==========================================================================
+  
+  describe('xpath generation', () => {
+    it('should generate valid XPath', () => {
+      const input = createTestInput();
+      const xpath = builder.generateXPath(input);
       
-      expect(step.metadata?.description).toContain('Click');
-      expect(step.metadata?.description).toContain('#submit-btn');
+      expect(xpath).toMatch(/^\/html\/body/);
+      expect(xpath).toContain('input');
     });
     
-    it('should generate input description', () => {
-      const step = builder
-        .withType('input')
-        .withTarget(createMockTarget())
-        .withValue('hello')
-        .build();
+    it('should include index for multiple siblings', () => {
+      const container = document.createElement('div');
+      const input1 = document.createElement('input');
+      const input2 = document.createElement('input');
+      container.appendChild(input1);
+      container.appendChild(input2);
+      document.body.appendChild(container);
       
-      expect(step.metadata?.description).toContain('Type');
-      expect(step.metadata?.description).toContain('hello');
-    });
-    
-    it('should generate navigation description', () => {
-      const step = builder
-        .withType('navigate')
-        .withTarget({ tagName: 'window', xpath: '', cssSelector: '' })
-        .withValue('https://example.com')
-        .build();
+      const xpath1 = builder.generateXPath(input1);
+      const xpath2 = builder.generateXPath(input2);
       
-      expect(step.metadata?.description).toContain('Navigate');
+      expect(xpath1).toContain('input[1]');
+      expect(xpath2).toContain('input[2]');
     });
   });
   
-  describe('validation', () => {
-    it('should validate valid step', () => {
-      const step = builder
-        .withType('click')
-        .withTarget(createMockTarget())
-        .build();
+  // ==========================================================================
+  // CSS SELECTOR GENERATION
+  // ==========================================================================
+  
+  describe('css selector generation', () => {
+    it('should prefer ID selector', () => {
+      const input = createTestInput({ id: 'email-input' });
+      const css = builder.generateCssSelector(input);
       
-      const result = builder.validate(step);
-      
-      expect(result.valid).toBe(true);
-      expect(result.errors).toHaveLength(0);
+      expect(css).toBe('input#email-input');
     });
     
-    it('should detect missing type', () => {
-      const step = {
-        id: 'test',
-        timestamp: Date.now(),
-        target: createMockTarget(),
-      } as RecordedStep;
+    it('should use name attribute when no ID', () => {
+      const input = document.createElement('input');
+      input.name = 'email';
+      document.body.appendChild(input);
       
-      const result = builder.validate(step);
+      const css = builder.generateCssSelector(input);
       
-      expect(result.valid).toBe(false);
-      expect(result.errors.some(e => e.code === 'MISSING_TYPE')).toBe(true);
+      expect(css).toBe('input[name="email"]');
     });
     
-    it('should detect missing target', () => {
-      const step = {
-        id: 'test',
-        type: 'click',
-        timestamp: Date.now(),
-      } as RecordedStep;
+    it('should use classes as fallback', () => {
+      const div = document.createElement('div');
+      div.className = 'container main';
+      document.body.appendChild(div);
       
-      const result = builder.validate(step);
+      const css = builder.generateCssSelector(div);
       
-      expect(result.valid).toBe(false);
-      expect(result.errors.some(e => e.code === 'MISSING_TARGET')).toBe(true);
-    });
-    
-    it('should detect invalid timestamp', () => {
-      const step = {
-        id: 'test',
-        type: 'click',
-        timestamp: 0,
-        target: createMockTarget(),
-      } as RecordedStep;
-      
-      const result = builder.validate(step);
-      
-      expect(result.valid).toBe(false);
-      expect(result.errors.some(e => e.code === 'INVALID_TIMESTAMP')).toBe(true);
-    });
-    
-    it('should warn about missing locator bundle', () => {
-      const step = builder
-        .withType('click')
-        .withTarget(createMockTarget())
-        .build();
-      
-      const result = builder.validate(step);
-      
-      expect(result.warnings.some(w => w.code === 'MISSING_LOCATOR_BUNDLE')).toBe(true);
-    });
-    
-    it('should build and validate together', () => {
-      const { step, validation } = builder
-        .withType('click')
-        .withTarget(createMockTarget())
-        .buildValidated();
-      
-      expect(step).toBeDefined();
-      expect(validation).toBeDefined();
-      expect(validation.valid).toBe(true);
+      expect(css).toBe('div.container.main');
     });
   });
   
-  describe('normalization', () => {
-    it('should normalize target tag name', () => {
-      const step = builder
-        .withType('click')
-        .withTarget({ ...createMockTarget(), tagName: 'BUTTON' })
-        .build();
+  // ==========================================================================
+  // BUNDLE CREATION
+  // ==========================================================================
+  
+  describe('bundle creation', () => {
+    it('should create complete bundle', () => {
+      const input = createTestInput({
+        id: 'test-id',
+        name: 'testName',
+        placeholder: 'Enter value',
+        'data-testid': 'test-element',
+      });
+      input.setAttribute('aria-label', 'Test Input');
       
-      const normalized = builder.normalize(step);
+      const bundle = builder.createBundle(input);
       
-      expect(normalized.target.tagName).toBe('button');
+      expect(bundle.tag).toBe('input');
+      expect(bundle.id).toBe('test-id');
+      expect(bundle.name).toBe('testName');
+      expect(bundle.placeholder).toBe('Enter value');
+      expect(bundle.aria).toBe('Test Input');
+      expect(bundle.dataAttrs.testid).toBe('test-element');
+      expect(bundle.xpath).toContain('input');
+      expect(bundle.css).toContain('test-id');
     });
     
-    it('should trim text content', () => {
-      const step = builder
-        .withType('click')
-        .withTarget({ ...createMockTarget(), textContent: '  hello  ' })
-        .build();
+    it('should include bounding info', () => {
+      const button = createTestButton();
+      const bundle = builder.createBundle(button);
       
-      const normalized = builder.normalize(step);
-      
-      expect(normalized.target.textContent).toBe('hello');
+      expect(bundle.bounding).toBeDefined();
+      expect(typeof bundle.bounding.x).toBe('number');
+      expect(typeof bundle.bounding.y).toBe('number');
+      expect(typeof bundle.bounding.width).toBe('number');
+      expect(typeof bundle.bounding.height).toBe('number');
     });
     
-    it('should set default timeout', () => {
-      const step = {
-        id: 'test',
-        type: 'click' as const,
-        timestamp: Date.now(),
-        target: createMockTarget(),
-      };
+    it('should include iframe chain when provided', () => {
+      const input = createTestInput();
+      const bundle = builder.createBundle(input, [0, 1]);
       
-      const normalized = builder.normalize(step);
+      expect(bundle.iframeChain).toEqual([0, 1]);
+    });
+    
+    it('should include shadow hosts when provided', () => {
+      const input = createTestInput();
+      const bundle = builder.createBundle(input, undefined, ['/html/body/div[1]']);
       
-      expect(normalized.metadata?.timeout).toBe(DEFAULT_STEP_TIMEOUT);
+      expect(bundle.shadowHosts).toEqual(['/html/body/div[1]']);
     });
   });
   
-  describe('step merging', () => {
-    it('should identify mergeable steps', () => {
-      const prev: RecordedStep = {
-        id: 'step-1',
-        type: 'input',
-        timestamp: 1000,
-        target: createMockTarget(),
-        value: 'hel',
-      };
-      
-      const current: RecordedStep = {
-        id: 'step-2',
-        type: 'input',
-        timestamp: 1200,
-        target: createMockTarget(),
-        value: 'hello',
-      };
-      
-      expect(builder.shouldMerge(prev, current)).toBe(true);
-    });
-    
-    it('should not merge different types', () => {
-      const prev: RecordedStep = {
-        id: 'step-1',
-        type: 'input',
-        timestamp: 1000,
-        target: createMockTarget(),
-      };
-      
-      const current: RecordedStep = {
-        id: 'step-2',
-        type: 'click',
-        timestamp: 1200,
-        target: createMockTarget(),
-      };
-      
-      expect(builder.shouldMerge(prev, current)).toBe(false);
-    });
-    
-    it('should not merge outside time window', () => {
-      const prev: RecordedStep = {
-        id: 'step-1',
-        type: 'input',
-        timestamp: 1000,
-        target: createMockTarget(),
-      };
-      
-      const current: RecordedStep = {
-        id: 'step-2',
-        type: 'input',
-        timestamp: 1000 + MERGE_WINDOW_MS + 100,
-        target: createMockTarget(),
-      };
-      
-      expect(builder.shouldMerge(prev, current)).toBe(false);
-    });
-    
-    it('should not merge different targets', () => {
-      const prev: RecordedStep = {
-        id: 'step-1',
-        type: 'input',
-        timestamp: 1000,
-        target: createMockTarget({ id: 'input-1' }),
-      };
-      
-      const current: RecordedStep = {
-        id: 'step-2',
-        type: 'input',
-        timestamp: 1200,
-        target: createMockTarget({ id: 'input-2' }),
-      };
-      
-      expect(builder.shouldMerge(prev, current)).toBe(false);
-    });
-    
-    it('should merge steps correctly', () => {
-      const prev: RecordedStep = {
-        id: 'step-1',
-        type: 'input',
-        timestamp: 1000,
-        target: createMockTarget(),
-        value: 'hel',
-      };
-      
-      const current: RecordedStep = {
-        id: 'step-2',
-        type: 'input',
-        timestamp: 1200,
-        target: createMockTarget(),
-        value: 'hello',
-      };
-      
-      const merged = builder.mergeSteps(prev, current);
-      
-      expect(merged.id).toBe(prev.id);
-      expect(merged.value).toBe('hello');
-      expect(merged.timestamp).toBe(1200);
-      expect(merged.metadata?.mergedFrom).toBe('step-1');
-    });
-    
-    it('should merge when building from event with context', () => {
-      const prevStep: RecordedStep = {
-        id: 'step-1',
-        type: 'input',
-        timestamp: Date.now() - 100,
-        target: createMockTarget(),
-        value: 'hel',
-      };
-      
-      const event = createMockCapturedEvent({
-        type: 'input',
-        target: createMockElementInfo(),
-        data: { type: 'input', value: 'hello', isComposing: false },
+  // ==========================================================================
+  // DATA ATTRIBUTE EXTRACTION
+  // ==========================================================================
+  
+  describe('data attribute extraction', () => {
+    it('should extract all data attributes', () => {
+      const input = createTestInput({
+        'data-testid': 'input-1',
+        'data-automation': 'email-field',
+        'data-custom': 'value',
       });
       
-      const step = builder
-        .fromCapturedEvent(event, { previousStep: prevStep })
-        .build();
+      const dataAttrs = builder.extractDataAttributes(input);
       
-      expect(step.value).toBe('hello');
+      expect(dataAttrs.testid).toBe('input-1');
+      expect(dataAttrs.automation).toBe('email-field');
+      expect(dataAttrs.custom).toBe('value');
+    });
+    
+    it('should return empty object when no data attributes', () => {
+      const div = document.createElement('div');
+      document.body.appendChild(div);
+      
+      const dataAttrs = builder.extractDataAttributes(div);
+      
+      expect(Object.keys(dataAttrs).length).toBe(0);
+    });
+  });
+  
+  // ==========================================================================
+  // COORDINATE EXTRACTION
+  // ==========================================================================
+  
+  describe('coordinate extraction', () => {
+    it('should extract center coordinates', () => {
+      const button = createTestButton();
+      // Mock getBoundingClientRect
+      vi.spyOn(button, 'getBoundingClientRect').mockReturnValue({
+        left: 100,
+        top: 200,
+        width: 80,
+        height: 40,
+        right: 180,
+        bottom: 240,
+        x: 100,
+        y: 200,
+        toJSON: () => {},
+      });
+      
+      const coords = builder.extractCoordinates(button);
+      
+      expect(coords.x).toBe(140); // 100 + 80/2
+      expect(coords.y).toBe(220); // 200 + 40/2
+    });
+  });
+  
+  // ==========================================================================
+  // EVENT TYPE INFERENCE
+  // ==========================================================================
+  
+  describe('event type inference', () => {
+    it('should infer click for buttons', () => {
+      const button = createTestButton();
+      const eventType = builder.inferEventType(button);
+      
+      expect(eventType).toBe('click');
+    });
+    
+    it('should infer input for text inputs', () => {
+      const input = createTestInput({ type: 'text' });
+      const eventType = builder.inferEventType(input);
+      
+      expect(eventType).toBe('input');
+    });
+    
+    it('should infer click for submit inputs', () => {
+      const input = createTestInput({ type: 'submit' });
+      const eventType = builder.inferEventType(input);
+      
+      expect(eventType).toBe('click');
+    });
+    
+    it('should infer from event type', () => {
+      const div = document.createElement('div');
+      const clickEvent = createClickEvent();
+      
+      const eventType = builder.inferEventType(div, clickEvent);
+      
+      expect(eventType).toBe('click');
+    });
+  });
+  
+  // ==========================================================================
+  // FLUENT API
+  // ==========================================================================
+  
+  describe('fluent api', () => {
+    it('should build step using fluent api', () => {
+      const input = createTestInput();
+      
+      const step = builder
+        .forElement(input)
+        .withEvent('input')
+        .withValue('test@example.com')
+        .buildStep();
+      
+      expect(step.event).toBe('input');
+      expect(step.value).toBe('test@example.com');
+    });
+    
+    it('should support iframe chain in fluent api', () => {
+      const input = createTestInput();
+      
+      const step = builder
+        .forElement(input)
+        .withEvent('input')
+        .withIframeChain([0, 1, 2])
+        .buildStep();
+      
+      expect(step.bundle?.iframeChain).toEqual([0, 1, 2]);
+    });
+    
+    it('should support label override in fluent api', () => {
+      const button = createTestButton();
+      
+      const step = builder
+        .forElement(button)
+        .withEvent('click')
+        .withLabel('Custom Button Label')
+        .buildStep();
+      
+      expect(step.label).toBe('Custom Button Label');
+    });
+    
+    it('should throw without element', () => {
+      expect(() => builder.buildStep()).toThrow();
+    });
+    
+    it('should reset state after build', () => {
+      const button = createTestButton();
+      
+      builder
+        .forElement(button)
+        .withEvent('click')
+        .withLabel('Label 1')
+        .buildStep();
+      
+      // Should throw because element was reset
+      expect(() => builder.buildStep()).toThrow();
+    });
+  });
+  
+  // ==========================================================================
+  // CONFIGURATION
+  // ==========================================================================
+  
+  describe('configuration', () => {
+    it('should exclude bundle when configured', () => {
+      const lightBuilder = new StepBuilder({ includeBundle: false });
+      const button = createTestButton();
+      
+      const step = lightBuilder.buildFromClick(button);
+      
+      expect(step.bundle).toBeUndefined();
+    });
+    
+    it('should use custom id prefix', () => {
+      const customBuilder = new StepBuilder({ idPrefix: 'custom' });
+      const button = createTestButton();
+      
+      const step = customBuilder.buildFromClick(button);
+      
+      expect(step.id).toMatch(/^custom_/);
+    });
+    
+    it('should use custom start sequence', () => {
+      const customBuilder = new StepBuilder({ startSequence: 100 });
+      
+      expect(customBuilder.getSequence()).toBe(100);
     });
   });
 });
@@ -704,73 +558,110 @@ describe('StepBuilder', () => {
 // FACTORY FUNCTION TESTS
 // ============================================================================
 
-describe('buildStepFromEvent', () => {
-  it('should build step from event', () => {
-    const event = createMockCapturedEvent();
-    const step = buildStepFromEvent(event);
-    
-    expect(step.type).toBe('click');
-    expect(step.target?.tagName).toBe('button');
-  });
-});
-
-describe('buildClickStep', () => {
-  it('should build click step', () => {
-    const target = createMockTarget();
-    const step = buildClickStep(target);
-    
-    expect(step.type).toBe('click');
-    expect(step.target).toEqual(target);
+describe('factory functions', () => {
+  beforeEach(() => {
+    resetStepBuilder();
   });
   
-  it('should accept options', () => {
-    const target = createMockTarget();
-    const step = buildClickStep(target, {
-      description: 'Custom click',
-      metadata: { timeout: 5000 },
-    });
+  afterEach(() => {
+    document.body.innerHTML = '';
+    resetStepBuilder();
+  });
+  
+  it('createStepBuilder should create builder', () => {
+    const builder = createStepBuilder();
+    expect(builder).toBeInstanceOf(StepBuilder);
+  });
+  
+  it('createLightweightBuilder should exclude bundles', () => {
+    const builder = createLightweightBuilder();
+    const button = document.createElement('button');
+    document.body.appendChild(button);
     
-    expect(step.metadata?.description).toBe('Custom click');
-    expect(step.metadata?.timeout).toBe(5000);
+    const step = builder.buildFromClick(button);
+    
+    expect(step.bundle).toBeUndefined();
   });
 });
 
-describe('buildInputStep', () => {
-  it('should build input step', () => {
-    const target = createMockTarget();
-    const step = buildInputStep(target, 'test value');
+// ============================================================================
+// SINGLETON TESTS
+// ============================================================================
+
+describe('singleton', () => {
+  beforeEach(() => {
+    resetStepBuilder();
+  });
+  
+  afterEach(() => {
+    document.body.innerHTML = '';
+    resetStepBuilder();
+  });
+  
+  it('getStepBuilder should return singleton', () => {
+    const builder1 = getStepBuilder();
+    const builder2 = getStepBuilder();
     
-    expect(step.type).toBe('input');
+    expect(builder1).toBe(builder2);
+  });
+  
+  it('resetStepBuilder should clear singleton', () => {
+    const builder1 = getStepBuilder();
+    resetStepBuilder();
+    const builder2 = getStepBuilder();
+    
+    expect(builder1).not.toBe(builder2);
+  });
+});
+
+// ============================================================================
+// CONVENIENCE FUNCTION TESTS
+// ============================================================================
+
+describe('convenience functions', () => {
+  beforeEach(() => {
+    resetStepBuilder();
+  });
+  
+  afterEach(() => {
+    document.body.innerHTML = '';
+    resetStepBuilder();
+  });
+  
+  it('buildClickStep should build click step', () => {
+    const button = document.createElement('button');
+    document.body.appendChild(button);
+    
+    const step = buildClickStep(button);
+    
+    expect(step.event).toBe('click');
+  });
+  
+  it('buildInputStep should build input step', () => {
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    
+    const step = buildInputStep(input, 'test value');
+    
+    expect(step.event).toBe('input');
     expect(step.value).toBe('test value');
   });
-});
-
-describe('buildNavigationStep', () => {
-  it('should build navigation step', () => {
+  
+  it('buildNavigationStep should build navigation step', () => {
     const step = buildNavigationStep('https://example.com');
     
-    expect(step.type).toBe('navigate');
+    expect(step.event).toBe('open');
     expect(step.value).toBe('https://example.com');
-    expect(step.target?.tagName).toBe('window');
-  });
-});
-
-describe('buildAssertStep', () => {
-  it('should build assertion step', () => {
-    const target = createMockTarget();
-    const step = buildAssertStep(target, { type: 'visible' });
-    
-    expect(step.type).toBe('assert');
-    expect(step.metadata?.assertion).toEqual({ type: 'visible' });
   });
   
-  it('should support different assertion types', () => {
-    const target = createMockTarget();
+  it('createLocatorBundle should create bundle', () => {
+    const input = document.createElement('input');
+    input.id = 'test';
+    document.body.appendChild(input);
     
-    const textAssert = buildAssertStep(target, { type: 'text', expected: 'Hello' });
-    expect(textAssert.metadata?.assertion?.expected).toBe('Hello');
+    const bundle = createLocatorBundle(input);
     
-    const attrAssert = buildAssertStep(target, { type: 'attribute', attribute: 'disabled' });
-    expect(attrAssert.metadata?.assertion?.attribute).toBe('disabled');
+    expect(bundle.tag).toBe('input');
+    expect(bundle.id).toBe('test');
   });
 });

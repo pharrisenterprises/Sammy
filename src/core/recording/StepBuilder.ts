@@ -1,1021 +1,735 @@
 /**
- * StepBuilder - Creates RecordedStep objects from events
+ * StepBuilder - Build Step Objects from DOM Events
  * @module core/recording/StepBuilder
  * @version 1.0.0
  * 
- * Transforms captured events into complete RecordedStep objects.
- * Enriches steps with locator bundles, screenshots, and metadata.
- * Supports step validation, normalization, and merging.
+ * Constructs complete Step objects from captured DOM events and elements.
+ * Handles label detection, locator bundle creation, and coordinate extraction.
  * 
- * Features:
- * - Builder pattern for flexible step construction
- * - Locator bundle generation
- * - Screenshot capture integration
- * - Step validation and normalization
- * - Consecutive input merging
+ * ## Features
+ * - Fluent builder pattern for Step construction
+ * - Automatic label resolution via LabelResolver
+ * - Complete LocatorBundle generation
+ * - XPath generation with shadow DOM support
+ * - Bounding box coordinate extraction
+ * - Unique step ID generation
+ * - Sequence number tracking
  * 
- * @see recording-engine_breakdown.md for architecture details
+ * @see Step for step structure
+ * @see LocatorBundle for locator data
+ * @see LabelResolver for label detection
  */
 
-import type {
-  RecordedStep,
-  StepType,
-  StepTarget,
-  StepMetadata,
-} from '../types/step';
-import type { LocatorBundle } from '../types/locator-bundle';
-import type { CapturedEvent, ElementInfo } from './EventCapture';
-
-// ============================================================================
-// CONSTANTS
-// ============================================================================
-
-/**
- * Default step timeout (ms)
- */
-export const DEFAULT_STEP_TIMEOUT = 30000;
-
-/**
- * Maximum description length
- */
-export const MAX_DESCRIPTION_LENGTH = 500;
-
-/**
- * Maximum value length
- */
-export const MAX_VALUE_LENGTH = 10000;
-
-/**
- * Step types that can be merged
- */
-export const MERGEABLE_STEP_TYPES: StepType[] = ['input', 'keypress'];
-
-/**
- * Time window for merging steps (ms)
- */
-export const MERGE_WINDOW_MS = 500;
-
-/**
- * Validation error codes
- */
-export const VALIDATION_ERRORS = {
-  MISSING_TYPE: 'MISSING_TYPE',
-  INVALID_TYPE: 'INVALID_TYPE',
-  MISSING_TARGET: 'MISSING_TARGET',
-  MISSING_XPATH: 'MISSING_XPATH',
-  MISSING_SELECTOR: 'MISSING_SELECTOR',
-  INVALID_TIMESTAMP: 'INVALID_TIMESTAMP',
-  VALUE_TOO_LONG: 'VALUE_TOO_LONG',
-} as const;
+import { LabelResolver, getResolver, type ResolvedLabel } from './labels/LabelResolver';
 
 // ============================================================================
 // TYPES
 // ============================================================================
 
 /**
+ * Supported step event types
+ */
+export type StepEventType = 'click' | 'input' | 'enter' | 'open';
+
+/**
+ * Step structure (matches P4-002)
+ */
+export interface Step {
+  /** Unique step identifier */
+  id: string;
+  
+  /** Step display name (derived from label) */
+  name: string;
+  
+  /** Event type */
+  event: StepEventType;
+  
+  /** XPath to element */
+  path: string;
+  
+  /** Input value (for input events) */
+  value: string;
+  
+  /** Human-readable label */
+  label: string;
+  
+  /** X coordinate (center of element) */
+  x: number;
+  
+  /** Y coordinate (center of element) */
+  y: number;
+  
+  /** Comprehensive locator bundle */
+  bundle?: LocatorBundle;
+}
+
+/**
+ * Locator bundle structure (matches P4-045)
+ */
+export interface LocatorBundle {
+  /** Element tag name */
+  tag: string;
+  
+  /** Element ID */
+  id: string | null;
+  
+  /** Element name attribute */
+  name: string | null;
+  
+  /** Placeholder text */
+  placeholder: string | null;
+  
+  /** ARIA label */
+  aria: string | null;
+  
+  /** Data attributes */
+  dataAttrs: Record<string, string>;
+  
+  /** Visible text content */
+  text: string;
+  
+  /** CSS selector */
+  css: string;
+  
+  /** XPath */
+  xpath: string;
+  
+  /** CSS classes */
+  classes: string[];
+  
+  /** Page URL */
+  pageUrl: string;
+  
+  /** Bounding box */
+  bounding: BoundingInfo;
+  
+  /** Iframe chain (indices) */
+  iframeChain: number[] | null;
+  
+  /** Shadow host XPaths */
+  shadowHosts: string[] | null;
+}
+
+/**
+ * Bounding box information
+ */
+export interface BoundingInfo {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
  * Step builder configuration
  */
 export interface StepBuilderConfig {
-  /** Generate locator bundles */
-  generateLocators?: boolean;
-  /** Capture screenshots */
-  captureScreenshots?: boolean;
-  /** Screenshot quality (0-1) */
-  screenshotQuality?: number;
-  /** Include page metadata */
-  includePageMetadata?: boolean;
-  /** Merge consecutive inputs */
-  mergeConsecutiveInputs?: boolean;
-  /** Merge window in ms */
-  mergeWindowMs?: number;
-  /** Maximum value length */
-  maxValueLength?: number;
-  /** Auto-generate descriptions */
-  autoGenerateDescriptions?: boolean;
-  /** Locator generator instance */
-  locatorGenerator?: LocatorGeneratorInterface;
-  /** Screenshot capturer instance */
-  screenshotCapturer?: ScreenshotCapturerInterface;
+  /** Label resolver instance */
+  resolver?: LabelResolver;
+  
+  /** Starting sequence number */
+  startSequence?: number;
+  
+  /** ID prefix */
+  idPrefix?: string;
+  
+  /** Include bundle in steps */
+  includeBundle?: boolean;
+  
+  /** Default label for unlabeled elements */
+  defaultLabel?: string;
 }
 
 /**
- * Locator generator interface
+ * Default configuration
  */
-export interface LocatorGeneratorInterface {
-  generate(element: Element): LocatorBundle;
-}
-
-/**
- * Screenshot capturer interface
- */
-export interface ScreenshotCapturerInterface {
-  capture(element?: Element): Promise<string>;
-}
-
-/**
- * Step validation result
- */
-export interface StepValidationResult {
-  /** Whether step is valid */
-  valid: boolean;
-  /** Validation errors */
-  errors: StepValidationError[];
-  /** Validation warnings */
-  warnings: StepValidationWarning[];
-}
-
-/**
- * Validation error
- */
-export interface StepValidationError {
-  /** Error code */
-  code: keyof typeof VALIDATION_ERRORS;
-  /** Error message */
-  message: string;
-  /** Field with error */
-  field?: string;
-}
-
-/**
- * Validation warning
- */
-export interface StepValidationWarning {
-  /** Warning code */
-  code: string;
-  /** Warning message */
-  message: string;
-  /** Field with warning */
-  field?: string;
-}
+export const DEFAULT_STEP_BUILDER_CONFIG: Required<StepBuilderConfig> = {
+  resolver: undefined as any, // Will use singleton
+  startSequence: 1,
+  idPrefix: 'step',
+  includeBundle: true,
+  defaultLabel: 'Unlabeled',
+};
 
 /**
  * Build context for step creation
  */
-export interface StepBuildContext {
-  /** Session ID */
-  sessionId?: string;
-  /** Previous step for merging */
-  previousStep?: RecordedStep;
-  /** Page URL */
-  pageUrl?: string;
-  /** Page title */
-  pageTitle?: string;
-  /** Viewport dimensions */
-  viewport?: { width: number; height: number };
-}
-
-/**
- * Step template for common patterns
- */
-export interface StepTemplate {
-  /** Template name */
-  name: string;
-  /** Step type */
-  type: StepType;
-  /** Default metadata */
-  metadata?: Partial<StepMetadata>;
-  /** Description template */
-  descriptionTemplate?: string;
+export interface BuildContext {
+  /** The target element */
+  element: Element;
+  
+  /** The DOM event */
+  event?: Event;
+  
+  /** Event type override */
+  eventType?: StepEventType;
+  
+  /** Input value */
+  value?: string;
+  
+  /** Iframe chain */
+  iframeChain?: number[];
+  
+  /** Shadow host chain */
+  shadowHosts?: string[];
+  
+  /** Custom label override */
+  labelOverride?: string;
 }
 
 // ============================================================================
-// MAIN CLASS
+// STEP BUILDER CLASS
 // ============================================================================
 
 /**
- * StepBuilder - Creates RecordedStep objects
- * 
- * Provides a fluent builder interface for creating complete
- * RecordedStep objects from captured events.
+ * Builds Step objects from DOM events and elements
  * 
  * @example
  * ```typescript
  * const builder = new StepBuilder();
  * 
+ * // Build from click event
+ * const clickStep = builder.buildFromClick(buttonElement, clickEvent);
+ * 
+ * // Build from input event
+ * const inputStep = builder.buildFromInput(inputElement, inputEvent, 'user@example.com');
+ * 
+ * // Fluent building
  * const step = builder
- *   .fromCapturedEvent(event)
- *   .withLocatorBundle(bundle)
- *   .withScreenshot(screenshot)
- *   .withDescription('Click login button')
+ *   .forElement(element)
+ *   .withEvent('click')
+ *   .withValue('')
  *   .build();
  * ```
  */
 export class StepBuilder {
-  /**
-   * Configuration
-   */
+  private resolver: LabelResolver;
+  private sequence: number;
   private config: Required<StepBuilderConfig>;
   
-  /**
-   * Current step being built
-   */
-  private currentStep: Partial<RecordedStep> = {};
+  // Fluent builder state
+  private currentElement: Element | null = null;
+  private currentEventType: StepEventType = 'click';
+  private currentValue: string = '';
+  private currentIframeChain: number[] | null = null;
+  private currentShadowHosts: string[] | null = null;
+  private currentLabelOverride: string | null = null;
   
   /**
-   * Step counter for IDs
-   */
-  private stepCounter: number = 0;
-  
-  /**
-   * Creates a new StepBuilder
-   * 
-   * @param config - Builder configuration
+   * Create a new StepBuilder
    */
   constructor(config: StepBuilderConfig = {}) {
-    this.config = {
-      generateLocators: true,
-      captureScreenshots: false,
-      screenshotQuality: 0.8,
-      includePageMetadata: true,
-      mergeConsecutiveInputs: true,
-      mergeWindowMs: MERGE_WINDOW_MS,
-      maxValueLength: MAX_VALUE_LENGTH,
-      autoGenerateDescriptions: true,
-      locatorGenerator: undefined as unknown as LocatorGeneratorInterface,
-      screenshotCapturer: undefined as unknown as ScreenshotCapturerInterface,
-      ...config,
-    };
+    this.config = { ...DEFAULT_STEP_BUILDER_CONFIG, ...config };
+    this.resolver = config.resolver || getResolver();
+    this.sequence = this.config.startSequence;
   }
   
   // ==========================================================================
-  // BUILDER METHODS
+  // PRIMARY BUILD METHODS
   // ==========================================================================
   
   /**
-   * Resets the builder for a new step
+   * Build a Step from context
    */
-  reset(): this {
-    this.currentStep = {};
-    return this;
-  }
-  
-  /**
-   * Creates step from captured event
-   */
-  fromCapturedEvent(event: CapturedEvent, context?: StepBuildContext): this {
-    this.reset();
+  build(context: BuildContext): Step {
+    const { element, event, eventType, value, iframeChain, shadowHosts, labelOverride } = context;
     
-    // Map event type to step type
-    const stepType = this.mapEventToStepType(event);
+    // Determine event type
+    const stepEventType = eventType || this.inferEventType(element, event);
     
-    // Build target from element info
-    const target = this.buildTarget(event.target);
+    // Resolve label
+    const resolvedLabel = labelOverride 
+      ? { label: labelOverride, confidence: 1, success: true } as ResolvedLabel
+      : this.resolver.resolve(element);
     
-    // Extract value
-    const value = this.extractValue(event);
+    const label = resolvedLabel.success 
+      ? resolvedLabel.label 
+      : this.config.defaultLabel;
     
-    // Build metadata
-    const metadata = this.buildMetadata(event, context);
+    // Generate XPath
+    const xpath = this.generateXPath(element);
     
-    this.currentStep = {
-      id: this.generateStepId(context?.sessionId),
-      type: stepType,
-      timestamp: event.timestamp,
-      target,
-      value,
-      metadata,
+    // Get coordinates
+    const coordinates = this.extractCoordinates(element);
+    
+    // Build bundle if configured
+    const bundle = this.config.includeBundle 
+      ? this.createBundle(element, iframeChain, shadowHosts)
+      : undefined;
+    
+    // Generate ID
+    const id = this.generateId();
+    
+    // Create step
+    const step: Step = {
+      id,
+      name: this.generateName(label, stepEventType),
+      event: stepEventType,
+      path: xpath,
+      value: value || '',
+      label,
+      x: coordinates.x,
+      y: coordinates.y,
+      bundle,
     };
     
-    // Check for merging with previous step
-    if (
-      this.config.mergeConsecutiveInputs &&
-      context?.previousStep &&
-      this.shouldMerge(context.previousStep, this.currentStep as RecordedStep)
-    ) {
-      this.currentStep = this.mergeSteps(context.previousStep, this.currentStep as RecordedStep);
-    }
-    
-    return this;
-  }
-  
-  /**
-   * Creates step with specified type
-   */
-  withType(type: StepType): this {
-    this.currentStep.type = type;
-    return this;
-  }
-  
-  /**
-   * Sets step target
-   */
-  withTarget(target: StepTarget): this {
-    this.currentStep.target = target;
-    return this;
-  }
-  
-  /**
-   * Sets step target from element
-   */
-  withTargetElement(element: Element): this {
-    this.currentStep.target = this.buildTargetFromElement(element);
-    return this;
-  }
-  
-  /**
-   * Sets step value
-   */
-  withValue(value: string): this {
-    // Truncate if too long
-    if (value.length > this.config.maxValueLength) {
-      value = value.slice(0, this.config.maxValueLength);
-    }
-    this.currentStep.value = value;
-    return this;
-  }
-  
-  /**
-   * Sets step timestamp
-   */
-  withTimestamp(timestamp: number): this {
-    this.currentStep.timestamp = timestamp;
-    return this;
-  }
-  
-  /**
-   * Sets step ID
-   */
-  withId(id: string): this {
-    this.currentStep.id = id;
-    return this;
-  }
-  
-  /**
-   * Sets locator bundle
-   */
-  withLocatorBundle(bundle: LocatorBundle): this {
-    this.currentStep.locatorBundle = bundle;
-    return this;
-  }
-  
-  /**
-   * Generates locator bundle from element
-   */
-  withLocatorBundleFromElement(element: Element): this {
-    if (this.config.locatorGenerator) {
-      this.currentStep.locatorBundle = this.config.locatorGenerator.generate(element);
-    }
-    return this;
-  }
-  
-  /**
-   * Sets screenshot
-   */
-  withScreenshot(screenshot: string): this {
-    this.currentStep.screenshot = screenshot;
-    return this;
-  }
-  
-  /**
-   * Captures screenshot asynchronously
-   */
-  async withCapturedScreenshot(element?: Element): Promise<this> {
-    if (this.config.screenshotCapturer) {
-      this.currentStep.screenshot = await this.config.screenshotCapturer.capture(element);
-    }
-    return this;
-  }
-  
-  /**
-   * Sets step metadata
-   */
-  withMetadata(metadata: Partial<StepMetadata>): this {
-    this.currentStep.metadata = {
-      ...this.currentStep.metadata,
-      ...metadata,
-    };
-    return this;
-  }
-  
-  /**
-   * Sets step description
-   */
-  withDescription(description: string): this {
-    if (description.length > MAX_DESCRIPTION_LENGTH) {
-      description = description.slice(0, MAX_DESCRIPTION_LENGTH) + '...';
-    }
-    
-    this.currentStep.metadata = {
-      ...this.currentStep.metadata,
-      description,
-    };
-    return this;
-  }
-  
-  /**
-   * Sets step timeout
-   */
-  withTimeout(timeout: number): this {
-    this.currentStep.metadata = {
-      ...this.currentStep.metadata,
-      timeout,
-    };
-    return this;
-  }
-  
-  /**
-   * Marks step as optional
-   */
-  asOptional(optional: boolean = true): this {
-    this.currentStep.metadata = {
-      ...this.currentStep.metadata,
-      optional,
-    };
-    return this;
-  }
-  
-  /**
-   * Sets wait before step
-   */
-  withWaitBefore(waitMs: number): this {
-    this.currentStep.metadata = {
-      ...this.currentStep.metadata,
-      waitBefore: waitMs,
-    };
-    return this;
-  }
-  
-  /**
-   * Sets wait after step
-   */
-  withWaitAfter(waitMs: number): this {
-    this.currentStep.metadata = {
-      ...this.currentStep.metadata,
-      waitAfter: waitMs,
-    };
-    return this;
-  }
-  
-  /**
-   * Applies a step template
-   */
-  fromTemplate(template: StepTemplate): this {
-    this.currentStep.type = template.type;
-    
-    if (template.metadata) {
-      this.currentStep.metadata = {
-        ...this.currentStep.metadata,
-        ...template.metadata,
-      };
-    }
-    
-    return this;
-  }
-  
-  /**
-   * Builds the final step
-   */
-  build(): RecordedStep {
-    // Ensure required fields
-    if (!this.currentStep.id) {
-      this.currentStep.id = this.generateStepId();
-    }
-    
-    if (!this.currentStep.timestamp) {
-      this.currentStep.timestamp = Date.now();
-    }
-    
-    if (!this.currentStep.type) {
-      throw new Error('Step type is required');
-    }
-    
-    if (!this.currentStep.target) {
-      this.currentStep.target = {
-        tagName: 'unknown',
-        xpath: '',
-        cssSelector: '',
-      };
-    }
-    
-    // Auto-generate description
-    if (this.config.autoGenerateDescriptions && !this.currentStep.metadata?.description) {
-      this.currentStep.metadata = {
-        ...this.currentStep.metadata,
-        description: this.generateDescription(this.currentStep as RecordedStep),
-      };
-    }
-    
-    // Set default metadata
-    this.currentStep.metadata = {
-      timeout: DEFAULT_STEP_TIMEOUT,
-      ...this.currentStep.metadata,
-    };
-    
-    const step = this.currentStep as RecordedStep;
-    this.reset();
+    // Increment sequence
+    this.sequence++;
     
     return step;
   }
   
   /**
-   * Builds and validates the step
+   * Build a Step from a click event
    */
-  buildValidated(): { step: RecordedStep; validation: StepValidationResult } {
-    const step = this.build();
-    const validation = this.validate(step);
-    
-    return { step, validation };
+  buildFromClick(element: Element, event?: MouseEvent): Step {
+    return this.build({
+      element,
+      event,
+      eventType: 'click',
+      value: '',
+    });
   }
   
-  // ==========================================================================
-  // VALIDATION
-  // ==========================================================================
+  /**
+   * Build a Step from an input event
+   */
+  buildFromInput(element: Element, event?: Event, value?: string): Step {
+    const inputValue = value ?? this.extractValue(element);
+    
+    return this.build({
+      element,
+      event,
+      eventType: 'input',
+      value: inputValue,
+    });
+  }
   
   /**
-   * Validates a step
+   * Build a Step from a keyboard event (Enter key)
    */
-  validate(step: RecordedStep): StepValidationResult {
-    const errors: StepValidationError[] = [];
-    const warnings: StepValidationWarning[] = [];
+  buildFromKeyboard(element: Element, event?: KeyboardEvent): Step {
+    return this.build({
+      element,
+      event,
+      eventType: 'enter',
+      value: '',
+    });
+  }
+  
+  /**
+   * Build a Step for page navigation
+   */
+  buildFromNavigation(url: string): Step {
+    // Create a minimal pseudo-element for navigation
+    const id = this.generateId();
     
-    // Check type
-    if (!step.type) {
-      errors.push({
-        code: 'MISSING_TYPE',
-        message: 'Step type is required',
-        field: 'type',
-      });
-    }
-    
-    // Check target
-    if (!step.target) {
-      errors.push({
-        code: 'MISSING_TARGET',
-        message: 'Step target is required',
-        field: 'target',
-      });
-    } else {
-      if (!step.target.xpath && !step.target.cssSelector) {
-        warnings.push({
-          code: 'MISSING_SELECTORS',
-          message: 'Step has no XPath or CSS selector',
-          field: 'target',
-        });
-      }
-      
-      if (!step.target.tagName || step.target.tagName === 'unknown') {
-        warnings.push({
-          code: 'UNKNOWN_TAG',
-          message: 'Step target has unknown tag name',
-          field: 'target.tagName',
-        });
-      }
-    }
-    
-    // Check timestamp
-    if (!step.timestamp || step.timestamp <= 0) {
-      errors.push({
-        code: 'INVALID_TIMESTAMP',
-        message: 'Step timestamp is invalid',
-        field: 'timestamp',
-      });
-    }
-    
-    // Check value length
-    if (step.value && step.value.length > MAX_VALUE_LENGTH) {
-      warnings.push({
-        code: 'VALUE_TOO_LONG',
-        message: `Step value exceeds maximum length (${MAX_VALUE_LENGTH})`,
-        field: 'value',
-      });
-    }
-    
-    // Check locator bundle
-    if (!step.locatorBundle) {
-      warnings.push({
-        code: 'MISSING_LOCATOR_BUNDLE',
-        message: 'Step has no locator bundle for reliable replay',
-        field: 'locatorBundle',
-      });
-    }
-    
-    return {
-      valid: errors.length === 0,
-      errors,
-      warnings,
+    const step: Step = {
+      id,
+      name: `Navigate to ${new URL(url).hostname}`,
+      event: 'open',
+      path: '',
+      value: url,
+      label: 'Navigate',
+      x: 0,
+      y: 0,
     };
+    
+    this.sequence++;
+    return step;
   }
   
   // ==========================================================================
-  // NORMALIZATION
+  // FLUENT BUILDER API
   // ==========================================================================
   
   /**
-   * Normalizes a step
+   * Set the target element
    */
-  normalize(step: RecordedStep): RecordedStep {
-    const normalized = { ...step };
-    
-    // Normalize target
-    if (normalized.target) {
-      normalized.target = {
-        ...normalized.target,
-        tagName: normalized.target.tagName?.toLowerCase() ?? 'unknown',
-        className: normalized.target.className?.trim(),
-        textContent: normalized.target.textContent?.trim().slice(0, 500),
-      };
-    }
-    
-    // Normalize value
-    if (normalized.value) {
-      // Trim whitespace for non-input steps
-      if (normalized.type !== 'input') {
-        normalized.value = normalized.value.trim();
-      }
-      
-      // Truncate if too long
-      if (normalized.value.length > this.config.maxValueLength) {
-        normalized.value = normalized.value.slice(0, this.config.maxValueLength);
-      }
-    }
-    
-    // Ensure metadata exists
-    normalized.metadata = normalized.metadata ?? {};
-    
-    // Set default timeout if missing
-    if (!normalized.metadata.timeout) {
-      normalized.metadata.timeout = DEFAULT_STEP_TIMEOUT;
-    }
-    
-    return normalized;
-  }
-  
-  // ==========================================================================
-  // STEP MERGING
-  // ==========================================================================
-  
-  /**
-   * Checks if two steps should be merged
-   */
-  shouldMerge(prev: RecordedStep, current: RecordedStep): boolean {
-    // Only merge certain types
-    if (!MERGEABLE_STEP_TYPES.includes(prev.type) || prev.type !== current.type) {
-      return false;
-    }
-    
-    // Check time window
-    if (!current.timestamp || !prev.timestamp || current.timestamp - prev.timestamp > this.config.mergeWindowMs) {
-      return false;
-    }
-    
-    // Check same target
-    if (!prev.target || !current.target || !this.isSameTarget(prev.target, current.target)) {
-      return false;
-    }
-    
-    return true;
+  forElement(element: Element): StepBuilder {
+    this.currentElement = element;
+    return this;
   }
   
   /**
-   * Merges two steps
+   * Set the event type
    */
-  mergeSteps(prev: RecordedStep, current: RecordedStep): RecordedStep {
+  withEvent(eventType: StepEventType): StepBuilder {
+    this.currentEventType = eventType;
+    return this;
+  }
+  
+  /**
+   * Set the input value
+   */
+  withValue(value: string): StepBuilder {
+    this.currentValue = value;
+    return this;
+  }
+  
+  /**
+   * Set iframe chain
+   */
+  withIframeChain(chain: number[]): StepBuilder {
+    this.currentIframeChain = chain;
+    return this;
+  }
+  
+  /**
+   * Set shadow hosts
+   */
+  withShadowHosts(hosts: string[]): StepBuilder {
+    this.currentShadowHosts = hosts;
+    return this;
+  }
+  
+  /**
+   * Override the label
+   */
+  withLabel(label: string): StepBuilder {
+    this.currentLabelOverride = label;
+    return this;
+  }
+  
+  /**
+   * Build the step from fluent state
+   */
+  buildStep(): Step {
+    if (!this.currentElement) {
+      throw new Error('Element is required. Call forElement() first.');
+    }
+    
+    const step = this.build({
+      element: this.currentElement,
+      eventType: this.currentEventType,
+      value: this.currentValue,
+      iframeChain: this.currentIframeChain || undefined,
+      shadowHosts: this.currentShadowHosts || undefined,
+      labelOverride: this.currentLabelOverride || undefined,
+    });
+    
+    // Reset fluent state
+    this.resetFluentState();
+    
+    return step;
+  }
+  
+  /**
+   * Reset fluent builder state
+   */
+  private resetFluentState(): void {
+    this.currentElement = null;
+    this.currentEventType = 'click';
+    this.currentValue = '';
+    this.currentIframeChain = null;
+    this.currentShadowHosts = null;
+    this.currentLabelOverride = null;
+  }
+  
+  // ==========================================================================
+  // BUNDLE CREATION
+  // ==========================================================================
+  
+  /**
+   * Create a LocatorBundle for an element
+   */
+  createBundle(
+    element: Element,
+    iframeChain?: number[],
+    shadowHosts?: string[]
+  ): LocatorBundle {
+    const rect = element.getBoundingClientRect();
+    
     return {
-      ...prev,
-      value: current.value, // Use latest value
-      timestamp: current.timestamp, // Use latest timestamp
-      metadata: {
-        ...prev.metadata,
-        ...current.metadata,
-        mergedFrom: prev.id,
-        mergeCount: ((prev.metadata?.mergeCount as number) ?? 1) + 1,
-      },
-    };
-  }
-  
-  /**
-   * Checks if two targets are the same element
-   */
-  private isSameTarget(a: StepTarget, b: StepTarget): boolean {
-    // Compare by ID first
-    if (a.id && b.id) {
-      return a.id === b.id;
-    }
-    
-    // Compare by XPath
-    if (a.xpath && b.xpath) {
-      return a.xpath === b.xpath;
-    }
-    
-    // Compare by CSS selector
-    if (a.cssSelector && b.cssSelector) {
-      return a.cssSelector === b.cssSelector;
-    }
-    
-    // Compare by tag and name
-    return a.tagName === b.tagName && a.name === b.name;
-  }
-  
-  // ==========================================================================
-  // HELPER METHODS
-  // ==========================================================================
-  
-  /**
-   * Maps event type to step type
-   */
-  private mapEventToStepType(event: CapturedEvent): StepType {
-    const eventType = event.type;
-    
-    switch (eventType) {
-      case 'click':
-      case 'mousedown':
-      case 'mouseup':
-        return 'click';
-      case 'dblclick':
-        return 'dblclick';
-      case 'input':
-      case 'change':
-        return 'input';
-      case 'keydown':
-      case 'keyup':
-      case 'keypress':
-        return 'keypress';
-      case 'scroll':
-        return 'scroll';
-      case 'select':
-        return 'select';
-      case 'focus':
-        return 'focus';
-      case 'blur':
-        return 'blur';
-      case 'submit':
-        return 'submit';
-      case 'dragstart':
-      case 'dragend':
-      case 'drop':
-        return 'drag';
-      default:
-        return 'click';
-    }
-  }
-  
-  /**
-   * Builds step target from element info
-   */
-  private buildTarget(info: ElementInfo): StepTarget {
-    return {
-      tagName: info.tagName,
-      id: info.id,
-      className: info.classNames.join(' '),
-      name: info.name,
-      xpath: info.xpath,
-      cssSelector: info.cssSelector,
-      textContent: info.textContent,
-      attributes: {
-        ...info.attributes,
-        ...info.dataAttrs,
-        ...info.aria,
-      },
-    };
-  }
-  
-  /**
-   * Builds step target from DOM element
-   */
-  private buildTargetFromElement(element: Element): StepTarget {
-    return {
-      tagName: element.tagName.toLowerCase(),
-      id: element.id || undefined,
-      className: element.className || undefined,
-      name: element.getAttribute('name') ?? undefined,
+      tag: element.tagName.toLowerCase(),
+      id: element.id || null,
+      name: element.getAttribute('name'),
+      placeholder: element.getAttribute('placeholder'),
+      aria: element.getAttribute('aria-label'),
+      dataAttrs: this.extractDataAttributes(element),
+      text: this.extractVisibleText(element),
+      css: this.generateCssSelector(element),
       xpath: this.generateXPath(element),
-      cssSelector: this.generateCssSelector(element),
-      textContent: element.textContent?.trim().slice(0, 500),
-      attributes: this.extractAttributes(element),
+      classes: this.extractClasses(element),
+      pageUrl: typeof window !== 'undefined' ? window.location.href : '',
+      bounding: {
+        x: rect.left,
+        y: rect.top,
+        width: rect.width,
+        height: rect.height,
+      },
+      iframeChain: iframeChain || null,
+      shadowHosts: shadowHosts || null,
     };
   }
   
-  /**
-   * Extracts value from captured event
-   */
-  private extractValue(event: CapturedEvent): string | undefined {
-    const data = event.data;
-    
-    if ('value' in data && typeof data.value === 'string') {
-      let value = data.value;
-      
-      if (value.length > this.config.maxValueLength) {
-        value = value.slice(0, this.config.maxValueLength);
-      }
-      
-      return value;
-    }
-    
-    if ('key' in data && typeof data.key === 'string') {
-      return data.key;
-    }
-    
-    return undefined;
-  }
+  // ==========================================================================
+  // XPATH GENERATION
+  // ==========================================================================
   
   /**
-   * Builds step metadata
+   * Generate XPath for an element
    */
-  private buildMetadata(event: CapturedEvent, context?: StepBuildContext): StepMetadata {
-    const metadata: StepMetadata = {
-      timeout: DEFAULT_STEP_TIMEOUT,
-    };
-    
-    // Add event-specific metadata
-    const data = event.data;
-    
-    if ('clientX' in data && 'clientY' in data) {
-      metadata.coordinates = {
-        x: data.clientX,
-        y: data.clientY,
-      };
-    }
-    
-    if ('ctrlKey' in data || 'shiftKey' in data) {
-      metadata.modifiers = {
-        ctrl: 'ctrlKey' in data ? data.ctrlKey : false,
-        shift: 'shiftKey' in data ? data.shiftKey : false,
-        alt: 'altKey' in data ? data.altKey : false,
-        meta: 'metaKey' in data ? data.metaKey : false,
-      };
-    }
-    
-    // Add page metadata
-    if (this.config.includePageMetadata && context) {
-      if (context.pageUrl) {
-        metadata.pageUrl = context.pageUrl;
-      }
-      if (context.pageTitle) {
-        metadata.pageTitle = context.pageTitle;
-      }
-      if (context.viewport) {
-        metadata.viewport = context.viewport;
-      }
-    }
-    
-    // Add iframe chain
-    if (event.iframeChain) {
-      metadata.iframeChain = event.iframeChain;
-    }
-    
-    // Add shadow host chain
-    if (event.shadowHostChain) {
-      metadata.shadowHostChain = event.shadowHostChain;
-    }
-    
-    return metadata;
-  }
-  
-  /**
-   * Generates step ID
-   */
-  private generateStepId(sessionId?: string): string {
-    this.stepCounter++;
-    const prefix = sessionId ?? 'step';
-    return `${prefix}-${Date.now()}-${this.stepCounter}`;
-  }
-  
-  /**
-   * Generates step description
-   */
-  private generateDescription(step: RecordedStep): string {
-    const target = step.target;
-    const type = step.type;
-    
-    // Get element identifier
-    let elementDesc = target?.tagName || 'element';
-    
-    if (target) {
-      if (target.id) {
-        elementDesc = `#${target.id}`;
-      } else if (target.name) {
-        elementDesc = `[name="${target.name}"]`;
-      } else if (target.textContent) {
-        const text = target.textContent.slice(0, 30);
-        elementDesc = `"${text}${target.textContent.length > 30 ? '...' : ''}"`;
-      } else if (target.attributes?.['aria-label']) {
-        elementDesc = `[aria-label="${target.attributes['aria-label']}"]`;
-      }
-    }
-    
-    // Build description based on type
-    switch (type) {
-      case 'click':
-        return `Click on ${elementDesc}`;
-      case 'dblclick':
-        return `Double-click on ${elementDesc}`;
-      case 'input':
-        return `Type "${step.value?.slice(0, 20) ?? ''}${(step.value?.length ?? 0) > 20 ? '...' : ''}" into ${elementDesc}`;
-      case 'keypress':
-        return `Press ${step.value} on ${elementDesc}`;
-      case 'select':
-        return `Select "${step.value}" in ${elementDesc}`;
-      case 'scroll':
-        return `Scroll ${elementDesc}`;
-      case 'hover':
-        return `Hover over ${elementDesc}`;
-      case 'focus':
-        return `Focus on ${elementDesc}`;
-      case 'blur':
-        return `Blur ${elementDesc}`;
-      case 'submit':
-        return `Submit form ${elementDesc}`;
-      case 'navigate':
-        return `Navigate to ${step.value}`;
-      case 'wait':
-        return `Wait for ${elementDesc}`;
-      case 'assert':
-        return `Assert ${elementDesc}`;
-      case 'screenshot':
-        return `Take screenshot`;
-      case 'drag':
-        return `Drag ${elementDesc}`;
-      case 'drop':
-        return `Drop on ${elementDesc}`;
-      case 'upload':
-        return `Upload file to ${elementDesc}`;
-      case 'download':
-        return `Download from ${elementDesc}`;
-      default:
-        return `${type} on ${elementDesc}`;
-    }
-  }
-  
-  /**
-   * Generates XPath for element
-   */
-  private generateXPath(element: Element): string {
-    const parts: string[] = [];
+  generateXPath(element: Element): string {
+    const segments: string[] = [];
     let current: Element | null = element;
     
     while (current && current.nodeType === Node.ELEMENT_NODE) {
-      let index = 1;
-      let sibling: Element | null = current.previousElementSibling;
+      let segment = current.tagName.toLowerCase();
       
-      while (sibling) {
-        if (sibling.tagName === current.tagName) {
-          index++;
+      // Add index if there are siblings with same tag
+      const parent = current.parentElement;
+      if (parent) {
+        const siblings = Array.from(parent.children).filter(
+          child => child.tagName === current!.tagName
+        );
+        
+        if (siblings.length > 1) {
+          const index = siblings.indexOf(current) + 1;
+          segment += `[${index}]`;
         }
-        sibling = sibling.previousElementSibling;
       }
       
-      const tagName = current.tagName.toLowerCase();
-      const part = index > 1 ? `${tagName}[${index}]` : tagName;
-      parts.unshift(part);
+      segments.unshift(segment);
       
-      current = current.parentElement;
-    }
-    
-    return '/' + parts.join('/');
-  }
-  
-  /**
-   * Generates CSS selector for element
-   */
-  private generateCssSelector(element: Element): string {
-    if (element.id) {
-      return `#${element.id}`;
-    }
-    
-    const parts: string[] = [];
-    let current: Element | null = element;
-    
-    while (current && current !== document.body && parts.length < 5) {
-      let selector = current.tagName.toLowerCase();
-      
-      if (current.id) {
-        parts.unshift(`#${current.id}`);
+      // Stop at document body
+      if (current.tagName.toLowerCase() === 'body') {
+        segments.unshift('html');
         break;
       }
       
-      if (current.className) {
-        const classes = current.className.split(/\s+/).filter(c => c).slice(0, 2);
-        if (classes.length > 0) {
-          selector += '.' + classes.join('.');
-        }
-      }
-      
-      parts.unshift(selector);
-      current = current.parentElement;
+      current = parent;
     }
     
-    return parts.join(' > ');
+    return '/' + segments.join('/');
   }
   
   /**
-   * Extracts relevant attributes from element
+   * Generate CSS selector for an element
    */
-  private extractAttributes(element: Element): Record<string, string> {
-    const attrs: Record<string, string> = {};
-    const relevant = [
-      'data-testid', 'data-test', 'data-test-id', 'data-cy', 'data-qa',
-      'aria-label', 'aria-labelledby', 'aria-describedby',
-      'role', 'type', 'placeholder', 'title', 'alt',
-    ];
+  generateCssSelector(element: Element): string {
+    const tag = element.tagName.toLowerCase();
     
-    for (const attr of relevant) {
-      const value = element.getAttribute(attr);
-      if (value) {
-        attrs[attr] = value;
+    // Try ID first
+    if (element.id) {
+      return `${tag}#${element.id}`;
+    }
+    
+    // Try name attribute
+    const name = element.getAttribute('name');
+    if (name) {
+      return `${tag}[name="${name}"]`;
+    }
+    
+    // Try classes
+    if (element.className && typeof element.className === 'string') {
+      const classes = element.className.trim().split(/\s+/).slice(0, 2);
+      if (classes.length > 0 && classes[0]) {
+        return `${tag}.${classes.join('.')}`;
       }
     }
     
-    return attrs;
+    // Fallback to tag only
+    return tag;
+  }
+  
+  // ==========================================================================
+  // ATTRIBUTE EXTRACTION
+  // ==========================================================================
+  
+  /**
+   * Extract data attributes from element
+   */
+  extractDataAttributes(element: Element): Record<string, string> {
+    const dataAttrs: Record<string, string> = {};
+    
+    for (const attr of Array.from(element.attributes)) {
+      if (attr.name.startsWith('data-')) {
+        const key = attr.name.substring(5); // Remove 'data-' prefix
+        dataAttrs[key] = attr.value;
+      }
+    }
+    
+    return dataAttrs;
+  }
+  
+  /**
+   * Extract CSS classes from element
+   */
+  extractClasses(element: Element): string[] {
+    if (!element.className || typeof element.className !== 'string') {
+      return [];
+    }
+    
+    return element.className.trim().split(/\s+/).filter(Boolean);
+  }
+  
+  /**
+   * Extract visible text from element
+   */
+  extractVisibleText(element: Element): string {
+    // For inputs, get value or placeholder
+    if (element instanceof HTMLInputElement) {
+      return element.value || element.placeholder || '';
+    }
+    
+    if (element instanceof HTMLTextAreaElement) {
+      return element.value || element.placeholder || '';
+    }
+    
+    // For other elements, get text content
+    const text = element.textContent?.trim() || '';
+    
+    // Limit length
+    return text.length > 100 ? text.substring(0, 100) + '...' : text;
+  }
+  
+  /**
+   * Extract input value from element
+   */
+  extractValue(element: Element): string {
+    if (element instanceof HTMLInputElement) {
+      if (element.type === 'checkbox' || element.type === 'radio') {
+        return element.checked ? 'true' : 'false';
+      }
+      return element.value;
+    }
+    
+    if (element instanceof HTMLTextAreaElement) {
+      return element.value;
+    }
+    
+    if (element instanceof HTMLSelectElement) {
+      return element.value;
+    }
+    
+    // Contenteditable
+    if (element.getAttribute('contenteditable') === 'true') {
+      return element.textContent || '';
+    }
+    
+    return '';
+  }
+  
+  // ==========================================================================
+  // COORDINATE EXTRACTION
+  // ==========================================================================
+  
+  /**
+   * Extract center coordinates from element
+   */
+  extractCoordinates(element: Element): { x: number; y: number } {
+    const rect = element.getBoundingClientRect();
+    
+    return {
+      x: Math.round(rect.left + rect.width / 2),
+      y: Math.round(rect.top + rect.height / 2),
+    };
+  }
+  
+  // ==========================================================================
+  // ID AND NAME GENERATION
+  // ==========================================================================
+  
+  /**
+   * Generate unique step ID
+   */
+  generateId(): string {
+    const timestamp = Date.now();
+    const random = Math.random().toString(36).substring(2, 8);
+    return `${this.config.idPrefix}_${this.sequence}_${timestamp}_${random}`;
+  }
+  
+  /**
+   * Generate step name from label and event type
+   */
+  generateName(label: string, eventType: StepEventType): string {
+    const actionVerb = this.getActionVerb(eventType);
+    return `${actionVerb} "${label}"`;
+  }
+  
+  /**
+   * Get action verb for event type
+   */
+  private getActionVerb(eventType: StepEventType): string {
+    switch (eventType) {
+      case 'click':
+        return 'Click';
+      case 'input':
+        return 'Type in';
+      case 'enter':
+        return 'Press Enter on';
+      case 'open':
+        return 'Navigate to';
+      default:
+        return 'Interact with';
+    }
+  }
+  
+  // ==========================================================================
+  // EVENT TYPE INFERENCE
+  // ==========================================================================
+  
+  /**
+   * Infer event type from element and event
+   */
+  inferEventType(element: Element, event?: Event): StepEventType {
+    // Check event type first
+    if (event) {
+      if (event.type === 'click') return 'click';
+      if (event.type === 'input' || event.type === 'change') return 'input';
+      if (event.type === 'keydown' || event.type === 'keyup') {
+        const keyEvent = event as KeyboardEvent;
+        if (keyEvent.key === 'Enter') return 'enter';
+      }
+    }
+    
+    // Infer from element type
+    const tag = element.tagName.toLowerCase();
+    
+    if (tag === 'input') {
+      const inputType = (element as HTMLInputElement).type;
+      if (inputType === 'submit' || inputType === 'button') return 'click';
+      return 'input';
+    }
+    
+    if (tag === 'textarea' || tag === 'select') return 'input';
+    if (tag === 'button' || tag === 'a') return 'click';
+    
+    // Default to click
+    return 'click';
+  }
+  
+  // ==========================================================================
+  // CONFIGURATION
+  // ==========================================================================
+  
+  /**
+   * Get current sequence number
+   */
+  getSequence(): number {
+    return this.sequence;
+  }
+  
+  /**
+   * Reset sequence number
+   */
+  resetSequence(start?: number): void {
+    this.sequence = start ?? this.config.startSequence;
+  }
+  
+  /**
+   * Get the label resolver
+   */
+  getResolver(): LabelResolver {
+    return this.resolver;
+  }
+  
+  /**
+   * Set a new label resolver
+   */
+  setResolver(resolver: LabelResolver): void {
+    this.resolver = resolver;
   }
 }
 
@@ -1024,182 +738,70 @@ export class StepBuilder {
 // ============================================================================
 
 /**
- * Creates a new StepBuilder instance
- * 
- * @param config - Builder configuration
- * @returns New StepBuilder instance
+ * Create a StepBuilder with default configuration
  */
 export function createStepBuilder(config?: StepBuilderConfig): StepBuilder {
   return new StepBuilder(config);
 }
 
 /**
- * Builds a step from captured event
- * 
- * @param event - Captured event
- * @param context - Build context
- * @returns Built step
+ * Create a StepBuilder without bundles (lightweight)
  */
-export function buildStepFromEvent(
-  event: CapturedEvent,
-  context?: StepBuildContext
-): RecordedStep {
-  return new StepBuilder()
-    .fromCapturedEvent(event, context)
-    .build();
-}
-
-/**
- * Builds a click step
- */
-export function buildClickStep(
-  target: StepTarget,
-  options?: { description?: string; metadata?: Partial<StepMetadata> }
-): RecordedStep {
-  const builder = new StepBuilder()
-    .withType('click')
-    .withTarget(target);
-  
-  if (options?.description) {
-    builder.withDescription(options.description);
-  }
-  
-  if (options?.metadata) {
-    builder.withMetadata(options.metadata);
-  }
-  
-  return builder.build();
-}
-
-/**
- * Builds an input step
- */
-export function buildInputStep(
-  target: StepTarget,
-  value: string,
-  options?: { description?: string; metadata?: Partial<StepMetadata> }
-): RecordedStep {
-  const builder = new StepBuilder()
-    .withType('input')
-    .withTarget(target)
-    .withValue(value);
-  
-  if (options?.description) {
-    builder.withDescription(options.description);
-  }
-  
-  if (options?.metadata) {
-    builder.withMetadata(options.metadata);
-  }
-  
-  return builder.build();
-}
-
-/**
- * Builds a navigation step
- */
-export function buildNavigationStep(
-  url: string,
-  options?: { description?: string; metadata?: Partial<StepMetadata> }
-): RecordedStep {
-  const builder = new StepBuilder()
-    .withType('navigate')
-    .withTarget({
-      tagName: 'window',
-      xpath: '',
-      cssSelector: '',
-    })
-    .withValue(url);
-  
-  if (options?.description) {
-    builder.withDescription(options.description);
-  } else {
-    builder.withDescription(`Navigate to ${url}`);
-  }
-  
-  if (options?.metadata) {
-    builder.withMetadata(options.metadata);
-  }
-  
-  return builder.build();
-}
-
-/**
- * Builds an assertion step
- */
-export function buildAssertStep(
-  target: StepTarget,
-  assertion: {
-    type: 'exists' | 'visible' | 'text' | 'value' | 'attribute';
-    expected?: string;
-    attribute?: string;
-  },
-  options?: { description?: string; metadata?: Partial<StepMetadata> }
-): RecordedStep {
-  const builder = new StepBuilder()
-    .withType('assert')
-    .withTarget(target)
-    .withMetadata({
-      assertion,
-      ...options?.metadata,
-    });
-  
-  if (options?.description) {
-    builder.withDescription(options.description);
-  }
-  
-  return builder.build();
+export function createLightweightBuilder(): StepBuilder {
+  return new StepBuilder({ includeBundle: false });
 }
 
 // ============================================================================
-// STEP TEMPLATES
+// SINGLETON ACCESS
+// ============================================================================
+
+let defaultBuilder: StepBuilder | null = null;
+
+/**
+ * Get the default StepBuilder instance
+ */
+export function getStepBuilder(): StepBuilder {
+  if (!defaultBuilder) {
+    defaultBuilder = new StepBuilder();
+  }
+  return defaultBuilder;
+}
+
+/**
+ * Reset the default StepBuilder
+ */
+export function resetStepBuilder(): void {
+  defaultBuilder = null;
+}
+
+// ============================================================================
+// CONVENIENCE FUNCTIONS
 // ============================================================================
 
 /**
- * Common step templates
+ * Build a step from a click
  */
-export const STEP_TEMPLATES: Record<string, StepTemplate> = {
-  click: {
-    name: 'Click',
-    type: 'click',
-    descriptionTemplate: 'Click on {target}',
-  },
-  input: {
-    name: 'Input',
-    type: 'input',
-    descriptionTemplate: 'Type "{value}" into {target}',
-  },
-  submit: {
-    name: 'Submit Form',
-    type: 'submit',
-    descriptionTemplate: 'Submit form {target}',
-  },
-  navigate: {
-    name: 'Navigate',
-    type: 'navigate',
-    descriptionTemplate: 'Navigate to {value}',
-  },
-  waitForElement: {
-    name: 'Wait for Element',
-    type: 'wait',
-    metadata: {
-      waitType: 'element',
-      timeout: 10000,
-    },
-    descriptionTemplate: 'Wait for {target} to appear',
-  },
-  assertVisible: {
-    name: 'Assert Visible',
-    type: 'assert',
-    metadata: {
-      assertion: { type: 'visible' },
-    },
-    descriptionTemplate: 'Assert {target} is visible',
-  },
-};
+export function buildClickStep(element: Element, event?: MouseEvent): Step {
+  return getStepBuilder().buildFromClick(element, event);
+}
 
-// ============================================================================
-// DEFAULT EXPORT
-// ============================================================================
+/**
+ * Build a step from an input
+ */
+export function buildInputStep(element: Element, value: string, event?: Event): Step {
+  return getStepBuilder().buildFromInput(element, event, value);
+}
 
-export default StepBuilder;
+/**
+ * Build a step for navigation
+ */
+export function buildNavigationStep(url: string): Step {
+  return getStepBuilder().buildFromNavigation(url);
+}
+
+/**
+ * Create a LocatorBundle for an element
+ */
+export function createLocatorBundle(element: Element): LocatorBundle {
+  return getStepBuilder().createBundle(element);
+}
