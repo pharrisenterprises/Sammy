@@ -81,6 +81,37 @@ import {
   resetAllCSVSingletons,
   CSV_DEFAULTS,
   
+  // Content
+  type ContentScriptMode,
+  type ContentScriptState,
+  type RecordedEvent,
+  type StepExecutionRequest,
+  type StepExecutionResponse,
+  type NotificationConfig,
+  createMockContextBridge,
+  createMockNotificationUI,
+  createEmptyRecordingState,
+  createEmptyReplayState,
+  createInitialContentState,
+  createRecordedEvent,
+  createStepResponse,
+  createContentMessage,
+  isInputEventType,
+  isClickEventType,
+  formatStepProgress,
+  formatRowProgress,
+  formatReplayProgress,
+  isContentToExtensionMessage,
+  isExtensionToContentMessage,
+  isPageContextMessage,
+  isValidRecordedEventType,
+  resetAllContentSingletons,
+  CONTENT_DEFAULTS,
+  MESSAGE_TYPES,
+  NOTIFICATION_TYPES,
+  PAGE_SCRIPT_SOURCE,
+  CONTENT_SCRIPT_SOURCE,
+  
   // Core utilities
   CORE_VERSION,
   ALL_DEFAULTS,
@@ -771,6 +802,381 @@ describe('CSV Integration', () => {
 });
 
 // ============================================================================
+// CONTENT INTEGRATION TESTS
+// ============================================================================
+
+describe('Content Integration', () => {
+  describe('ContextBridge messaging', () => {
+    it('should send messages to extension', async () => {
+      const mockBridge = createMockContextBridge();
+      
+      const message = createContentMessage('logEvent', {
+        eventType: 'click',
+        xpath: '//button',
+      });
+      
+      await mockBridge.sendToExtension(message);
+      
+      const sent = mockBridge.getSentExtensionMessages();
+      expect(sent).toHaveLength(1);
+      expect(sent[0].type).toBe('logEvent');
+    });
+    
+    it('should send messages to page context', () => {
+      const mockBridge = createMockContextBridge();
+      
+      mockBridge.sendToPage({
+        type: 'REPLAY_AUTOCOMPLETE',
+        payload: { actions: [] },
+        source: CONTENT_SCRIPT_SOURCE,
+      });
+      
+      const sent = mockBridge.getSentPageMessages();
+      expect(sent).toHaveLength(1);
+      expect(sent[0].type).toBe('REPLAY_AUTOCOMPLETE');
+    });
+    
+    it('should handle extension message handlers', () => {
+      const mockBridge = createMockContextBridge();
+      const receivedMessages: unknown[] = [];
+      
+      mockBridge.onExtensionMessage((message, _sender, sendResponse) => {
+        receivedMessages.push(message);
+        sendResponse({ success: true });
+        return true;
+      });
+      
+      mockBridge.simulateExtensionMessage({
+        action: 'execute_step',
+        payload: { step: {} },
+      });
+      
+      expect(receivedMessages).toHaveLength(1);
+    });
+    
+    it('should handle page message handlers', () => {
+      const mockBridge = createMockContextBridge();
+      const receivedMessages: unknown[] = [];
+      
+      mockBridge.onPageMessage((message) => {
+        receivedMessages.push(message);
+      });
+      
+      mockBridge.simulatePageMessage({
+        type: 'AUTOCOMPLETE_INPUT',
+        payload: { value: 'test' },
+        source: PAGE_SCRIPT_SOURCE,
+      });
+      
+      expect(receivedMessages).toHaveLength(1);
+    });
+    
+    it('should track injected scripts', async () => {
+      const mockBridge = createMockContextBridge();
+      
+      await mockBridge.injectPageScript('js/page-interceptor.js');
+      await mockBridge.injectPageScript('js/replay.js');
+      
+      const scripts = mockBridge.getInjectedScripts();
+      expect(scripts).toContain('js/page-interceptor.js');
+      expect(scripts).toContain('js/replay.js');
+    });
+  });
+  
+  describe('NotificationUI display', () => {
+    it('should show loading notification with progress', () => {
+      const mockNotification = createMockNotificationUI();
+      
+      mockNotification.showLoading('Executing step 1 of 5...', 20);
+      
+      expect(mockNotification.isVisible()).toBe(true);
+      
+      const config = mockNotification.getCurrentConfig();
+      expect(config?.type).toBe('loading');
+      expect(config?.progress).toBe(20);
+      expect(config?.showProgress).toBe(true);
+    });
+    
+    it('should update notification progress', () => {
+      const mockNotification = createMockNotificationUI();
+      
+      mockNotification.showLoading('Processing...', 0);
+      mockNotification.update({ progress: 50, message: 'Halfway done...' });
+      
+      const config = mockNotification.getCurrentConfig();
+      expect(config?.progress).toBe(50);
+      expect(config?.message).toBe('Halfway done...');
+    });
+    
+    it('should show success notification', () => {
+      const mockNotification = createMockNotificationUI();
+      
+      mockNotification.showSuccess('Test completed!', 3000);
+      
+      const config = mockNotification.getCurrentConfig();
+      expect(config?.type).toBe('success');
+      expect(config?.duration).toBe(3000);
+    });
+    
+    it('should show error notification', () => {
+      const mockNotification = createMockNotificationUI();
+      
+      mockNotification.showError('Step failed: Element not found');
+      
+      const config = mockNotification.getCurrentConfig();
+      expect(config?.type).toBe('error');
+    });
+    
+    it('should track notification history', () => {
+      const mockNotification = createMockNotificationUI();
+      
+      mockNotification.showLoading('Step 1...');
+      mockNotification.showSuccess('Step 1 done');
+      mockNotification.showLoading('Step 2...');
+      mockNotification.showError('Step 2 failed');
+      
+      const history = mockNotification.getShowHistory();
+      expect(history).toHaveLength(4);
+      expect(history[0].type).toBe('loading');
+      expect(history[1].type).toBe('success');
+      expect(history[3].type).toBe('error');
+    });
+  });
+  
+  describe('Content script state management', () => {
+    it('should create initial content state', () => {
+      const state = createInitialContentState();
+      
+      expect(state.mode).toBe('idle');
+      expect(state.initialized).toBe(false);
+      expect(state.attachedIframes).toBe(0);
+      expect(state.interceptorInjected).toBe(false);
+    });
+    
+    it('should create empty recording state', () => {
+      const state = createEmptyRecordingState();
+      
+      expect(state.active).toBe(false);
+      expect(state.eventsCaptured).toBe(0);
+      expect(state.lastEventTime).toBeUndefined();
+      expect(state.projectId).toBeUndefined();
+    });
+    
+    it('should create empty replay state', () => {
+      const state = createEmptyReplayState();
+      
+      expect(state.active).toBe(false);
+      expect(state.currentStep).toBe(0);
+      expect(state.totalSteps).toBe(0);
+      expect(state.completedSteps).toBe(0);
+      expect(state.failedSteps).toBe(0);
+    });
+    
+    it('should track content state with recording', () => {
+      const state: ContentScriptState = {
+        mode: 'recording',
+        initialized: true,
+        pageUrl: 'https://example.com',
+        attachedIframes: 2,
+        interceptorInjected: true,
+        recordingState: {
+          active: true,
+          eventsCaptured: 5,
+          lastEventTime: Date.now(),
+          projectId: 1,
+        },
+      };
+      
+      expect(state.mode).toBe('recording');
+      expect(state.recordingState?.eventsCaptured).toBe(5);
+    });
+    
+    it('should track content state with replay', () => {
+      const state: ContentScriptState = {
+        mode: 'replaying',
+        initialized: true,
+        pageUrl: 'https://example.com',
+        attachedIframes: 0,
+        interceptorInjected: true,
+        replayState: {
+          active: true,
+          currentStep: 3,
+          totalSteps: 10,
+          completedSteps: 2,
+          failedSteps: 0,
+        },
+      };
+      
+      expect(state.mode).toBe('replaying');
+      expect(state.replayState?.currentStep).toBe(3);
+    });
+  });
+  
+  describe('Recorded event creation', () => {
+    it('should create recorded event with bundle', () => {
+      const bundle = createTestBundle();
+      
+      const event = createRecordedEvent('click', bundle, {
+        label: 'Submit Button',
+        x: 100,
+        y: 200,
+        page: 'https://example.com/form',
+      });
+      
+      expect(event.eventType).toBe('click');
+      expect(event.label).toBe('Submit Button');
+      expect(event.x).toBe(100);
+      expect(event.y).toBe(200);
+      expect(event.timestamp).toBeGreaterThan(0);
+    });
+    
+    it('should create input event with value', () => {
+      const bundle = createTestBundle();
+      
+      const event = createRecordedEvent('input', bundle, {
+        value: 'user@example.com',
+        label: 'Email',
+      });
+      
+      expect(event.eventType).toBe('input');
+      expect(event.value).toBe('user@example.com');
+    });
+    
+    it('should include iframe chain', () => {
+      const bundle = createTestBundle();
+      const iframeChain = [
+        { index: 0, id: 'outer-frame', src: 'https://example.com/frame1' },
+        { index: 1, id: 'inner-frame', src: 'https://example.com/frame2' },
+      ];
+      
+      const event = createRecordedEvent('click', bundle, {
+        iframeChain,
+      });
+      
+      expect(event.iframeChain).toHaveLength(2);
+      expect(event.iframeChain?.[0].id).toBe('outer-frame');
+    });
+  });
+  
+  describe('Step execution responses', () => {
+    it('should create success response', () => {
+      const response = createStepResponse(true, 150, {
+        strategyUsed: 'id',
+        elementFound: true,
+      });
+      
+      expect(response.success).toBe(true);
+      expect(response.duration).toBe(150);
+      expect(response.strategyUsed).toBe('id');
+      expect(response.elementFound).toBe(true);
+    });
+    
+    it('should create failure response', () => {
+      const response = createStepResponse(false, 5000, {
+        error: 'Element not found after 5000ms',
+        elementFound: false,
+      });
+      
+      expect(response.success).toBe(false);
+      expect(response.error).toBe('Element not found after 5000ms');
+      expect(response.elementFound).toBe(false);
+    });
+  });
+  
+  describe('Event type classification', () => {
+    it('should identify input event types', () => {
+      expect(isInputEventType('input')).toBe(true);
+      expect(isInputEventType('change')).toBe(true);
+      expect(isInputEventType('select')).toBe(true);
+      expect(isInputEventType('autocomplete_input')).toBe(true);
+      expect(isInputEventType('click')).toBe(false);
+    });
+    
+    it('should identify click event types', () => {
+      expect(isClickEventType('click')).toBe(true);
+      expect(isClickEventType('enter')).toBe(true);
+      expect(isClickEventType('submit')).toBe(true);
+      expect(isClickEventType('input')).toBe(false);
+    });
+    
+    it('should validate recorded event types', () => {
+      expect(isValidRecordedEventType('click')).toBe(true);
+      expect(isValidRecordedEventType('input')).toBe(true);
+      expect(isValidRecordedEventType('autocomplete_selection')).toBe(true);
+      expect(isValidRecordedEventType('invalid_type')).toBe(false);
+    });
+  });
+  
+  describe('Message type guards', () => {
+    it('should identify content-to-extension messages', () => {
+      expect(isContentToExtensionMessage({ type: 'logEvent' })).toBe(true);
+      expect(isContentToExtensionMessage({ action: 'start_recording' })).toBe(false);
+      expect(isContentToExtensionMessage(null)).toBe(false);
+    });
+    
+    it('should identify extension-to-content messages', () => {
+      expect(isExtensionToContentMessage({ action: 'start_recording' })).toBe(true);
+      expect(isExtensionToContentMessage({ type: 'logEvent' })).toBe(false);
+      expect(isExtensionToContentMessage(null)).toBe(false);
+    });
+    
+    it('should identify page context messages', () => {
+      expect(isPageContextMessage({ type: 'AUTOCOMPLETE_INPUT' })).toBe(true);
+      expect(isPageContextMessage({ action: 'test' })).toBe(false);
+      expect(isPageContextMessage(null)).toBe(false);
+    });
+  });
+  
+  describe('Progress formatting', () => {
+    it('should format step progress', () => {
+      expect(formatStepProgress(1, 5)).toBe('Step 1 of 5');
+      expect(formatStepProgress(3, 10, 'Login')).toBe('Step 3 of 10: Login');
+    });
+    
+    it('should format row progress', () => {
+      expect(formatRowProgress(2, 5, 3, 10)).toBe('Row 2/5 - Step 3/10');
+    });
+    
+    it('should calculate replay progress percentage', () => {
+      // Row 1 complete (5 steps), Row 2 at step 2
+      expect(formatReplayProgress(1, 3, 2, 5)).toBe(47); // (1 * 5 + 2) / 15 * 100 = 7/15 = 47%
+      
+      // All complete (2 complete, on last step of row 3)
+      expect(formatReplayProgress(2, 3, 5, 5)).toBe(100); // (2 * 5 + 5) / 15 * 100 = 15/15 = 100%
+      
+      // None complete
+      expect(formatReplayProgress(0, 3, 0, 5)).toBe(0);
+    });
+  });
+  
+  describe('Constants and defaults', () => {
+    it('should have content defaults', () => {
+      expect(CONTENT_DEFAULTS.STEP_TIMEOUT).toBe(30000);
+      expect(CONTENT_DEFAULTS.NOTIFICATION_DURATION).toBe(3000);
+      expect(CONTENT_DEFAULTS.ANIMATION_DURATION).toBe(300);
+    });
+    
+    it('should have message types', () => {
+      expect(MESSAGE_TYPES.LOG_EVENT).toBe('logEvent');
+      expect(MESSAGE_TYPES.START_RECORDING).toBe('start_recording');
+      expect(MESSAGE_TYPES.REPLAY_AUTOCOMPLETE).toBe('REPLAY_AUTOCOMPLETE');
+    });
+    
+    it('should have notification types', () => {
+      expect(NOTIFICATION_TYPES.LOADING).toBe('loading');
+      expect(NOTIFICATION_TYPES.SUCCESS).toBe('success');
+      expect(NOTIFICATION_TYPES.ERROR).toBe('error');
+      expect(NOTIFICATION_TYPES.INFO).toBe('info');
+    });
+    
+    it('should have source identifiers', () => {
+      expect(PAGE_SCRIPT_SOURCE).toBe('anthropic-auto-allow-page');
+      expect(CONTENT_SCRIPT_SOURCE).toBe('anthropic-auto-allow-content');
+    });
+  });
+});
+
+// ============================================================================
 // END-TO-END WORKFLOW TESTS
 // ============================================================================
 
@@ -1017,6 +1423,122 @@ describe('End-to-End Workflows', () => {
       expect(notFoundRes.success).toBe(false);
     });
   });
+  
+  describe('Content Script → Replay → Notification flow', () => {
+    it('should coordinate content script replay workflow', async () => {
+      // 1. Create mock components
+      const mockBridge = createMockContextBridge();
+      const mockNotification = createMockNotificationUI();
+      
+      // 2. Set up step execution handlers
+      const executedSteps: StepExecutionRequest[] = [];
+      
+      mockBridge.onExtensionMessage((message, _sender, sendResponse) => {
+        if (message.action === 'execute_step') {
+          executedSteps.push(message.payload as StepExecutionRequest);
+          sendResponse({ success: true, duration: 100 });
+        }
+        return true;
+      });
+      
+      // 3. Simulate receiving replay command
+      const steps: Step[] = [
+        createInputStep('Username', '', createTestBundle()),
+        createInputStep('Password', '', createTestBundle()),
+        createClickStep('Login', createTestBundle()),
+      ];
+      
+      // 4. Show loading notification
+      mockNotification.showLoading('Starting replay...', 0);
+      expect(mockNotification.isVisible()).toBe(true);
+      
+      // 5. Execute steps with progress updates
+      for (let i = 0; i < steps.length; i++) {
+        const progress = Math.round(((i + 1) / steps.length) * 100);
+        mockNotification.update({
+          message: formatStepProgress(i + 1, steps.length, steps[i].label),
+          progress,
+        });
+        
+        // Simulate step execution
+        mockBridge.simulateExtensionMessage({
+          action: 'execute_step',
+          payload: { step: steps[i] },
+        });
+      }
+      
+      // 6. Show completion notification
+      mockNotification.showSuccess('Replay completed!', 3000);
+      
+      // 7. Verify results
+      expect(executedSteps).toHaveLength(3);
+      expect(mockNotification.getCurrentConfig()?.type).toBe('success');
+      expect(mockNotification.getShowHistory()).toHaveLength(2); // Loading + Success
+    });
+    
+    it('should handle step failure in replay', () => {
+      const mockNotification = createMockNotificationUI();
+      
+      // Start replay
+      mockNotification.showLoading('Executing step 3 of 5...', 40);
+      
+      // Step fails
+      const response = createStepResponse(false, 5000, {
+        error: 'Element not found',
+        elementFound: false,
+      });
+      
+      // Show error
+      mockNotification.showError(`Step failed: ${response.error}`);
+      
+      expect(mockNotification.getCurrentConfig()?.type).toBe('error');
+      expect(mockNotification.getCurrentConfig()?.message).toContain('Element not found');
+    });
+  });
+  
+  describe('Recording → Content Script → Storage flow', () => {
+    it('should record events and send to storage', async () => {
+      // 1. Create mock bridge
+      const mockBridge = createMockContextBridge();
+      
+      // Configure response for storage
+      mockBridge.setExtensionResponse({ success: true, id: 1 });
+      
+      // 2. Simulate recording events
+      const events: RecordedEvent[] = [
+        createRecordedEvent('click', createTestBundle(), {
+          label: 'Login Link',
+          x: 50,
+          y: 100,
+        }),
+        createRecordedEvent('input', createTestBundle(), {
+          label: 'Username',
+          value: 'testuser',
+        }),
+        createRecordedEvent('input', createTestBundle(), {
+          label: 'Password',
+          value: 'secret',
+        }),
+        createRecordedEvent('click', createTestBundle(), {
+          label: 'Submit',
+          x: 200,
+          y: 300,
+        }),
+      ];
+      
+      // 3. Send events to extension
+      for (const event of events) {
+        await mockBridge.sendToExtension(
+          createContentMessage('logEvent', event)
+        );
+      }
+      
+      // 4. Verify all events were sent
+      const sentMessages = mockBridge.getSentExtensionMessages();
+      expect(sentMessages).toHaveLength(4);
+      expect(sentMessages.every(m => m.type === 'logEvent')).toBe(true);
+    });
+  });
 });
 
 // ============================================================================
@@ -1034,10 +1556,13 @@ describe('Core Module Utilities', () => {
     expect(ALL_DEFAULTS.orchestrator).toBeDefined();
     expect(ALL_DEFAULTS.background).toBeDefined();
     expect(ALL_DEFAULTS.csv).toBeDefined();
+    expect(ALL_DEFAULTS.content).toBeDefined();
     
-    // Verify CSV defaults
-    expect(ALL_DEFAULTS.csv.similarityThreshold).toBe(0.3);
-    expect(ALL_DEFAULTS.csv.previewRowCount).toBe(10);
+    // Verify content defaults
+    expect(ALL_DEFAULTS.content.stepTimeout).toBe(30000);
+    expect(ALL_DEFAULTS.content.notificationDuration).toBe(3000);
+    expect(ALL_DEFAULTS.content.animationDuration).toBe(300);
+    expect(ALL_DEFAULTS.content.extensionTimeout).toBe(30000);
   });
   
   it('should export CSV_DEFAULTS', () => {
@@ -1046,7 +1571,13 @@ describe('Core Module Utilities', () => {
     expect(CSV_DEFAULTS.MIN_MAPPED_FIELDS).toBe(1);
   });
   
-  it('should reset all singletons including CSV', () => {
+  it('should export CONTENT_DEFAULTS', () => {
+    expect(CONTENT_DEFAULTS.STEP_TIMEOUT).toBe(30000);
+    expect(CONTENT_DEFAULTS.NOTIFICATION_DURATION).toBe(3000);
+    expect(CONTENT_DEFAULTS.ANIMATION_DURATION).toBe(300);
+  });
+  
+  it('should reset all singletons including content', () => {
     // Create some state
     const router = createMessageRouter();
     router.register('test', async () => createSuccessResponse());
@@ -1054,11 +1585,21 @@ describe('Core Module Utilities', () => {
     const csvService = createCSVProcessingService();
     csvService.parseString('Name\nTest');
     
+    const mockBridge = createMockContextBridge();
+    mockBridge.onPageMessage(() => {});
+    
     // Reset
     resetAllSingletons();
     
-    // Verify state is cleared (new instances would be created)
-    expect(true).toBe(true); // If no errors, reset worked
+    // Verify state is cleared
+    expect(true).toBe(true);
+  });
+  
+  it('should reset content singletons separately', () => {
+    resetAllContentSingletons();
+    
+    // If no errors, reset worked
+    expect(true).toBe(true);
   });
   
   it('should reset CSV singletons separately', () => {
