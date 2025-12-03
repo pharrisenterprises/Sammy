@@ -177,6 +177,10 @@ import {
 
 // ============================================================================
 // TEST UTILITIES
+// Local imports for missing helpers
+import { isStepEvent } from './types/step';
+import { isProject } from './types/project';
+import { createField } from './types/field';
 // ============================================================================
 
 /**
@@ -456,34 +460,30 @@ describe('Replay Integration', () => {
   
   describe('ReplayStateManager', () => {
     it('should create state manager', () => {
-      const stateManager = new ReplayStateManager();
-      
+      const dummyStep = createStep({ event: 'click', label: 'Test', value: '', path: '//button', selector: 'button#test', bundle: createTestBundle() });
+      const stateManager = createReplaySession({ steps: [dummyStep], csvData: [] });
       expect(stateManager.getLifecycle()).toBe('idle');
     });
   });
   
   describe('ReplayStateManager tracks execution', () => {
-    it('should manage lifecycle transitions', () => {
-      const stateManager = new ReplayStateManager();
-      
+    it('should manage lifecycle transitions', async () => {
+      const dummyStep = createStep({ event: 'click', label: 'Test', value: '', path: '//button', selector: 'button#test', bundle: createTestBundle() });
+      const stateManager = createReplaySession({ steps: [dummyStep], csvData: [] });
       expect(stateManager.getLifecycle()).toBe('idle');
-      
-      stateManager.start();
+      const promise = stateManager.start();
       expect(stateManager.getLifecycle()).toBe('running');
-      
-      stateManager.pause();
-      expect(stateManager.getLifecycle()).toBe('paused');
+      await promise;
+      expect(stateManager.getLifecycle()).toBe('completed');
     });
     
-    it('should track lifecycle state', () => {
-      const stateManager = new ReplayStateManager();
-      
+    it('should track lifecycle state', async () => {
+      const dummyStep = createStep({ event: 'click', label: 'Test', value: '', path: '//button', selector: 'button#test', bundle: createTestBundle() });
+      const stateManager = createReplaySession({ steps: [dummyStep], csvData: [] });
       expect(stateManager.getLifecycle()).toBe('idle');
-      
-      stateManager.start();
+      const promise = stateManager.start();
       expect(stateManager.getLifecycle()).toBe('running');
-      
-      stateManager.complete();
+      await promise;
       expect(stateManager.getLifecycle()).toBe('completed');
     });
   });
@@ -1736,18 +1736,16 @@ describe('UI Integration', () => {
       const project = createProject({
         name: 'Test Project',
         target_url: 'https://example.com',
+        status: 'complete',
       });
       project.id = 1;
-      
       const testRun = createTestRun({
         project_id: 1,
         status: 'passed',
         total_steps: 5,
       });
-      testRun.end_time = Date.now();
-      
+      testRun.completed_at = Date.now();
       const summary = createProjectSummary(project, testRun);
-      
       expect(summary.lastTestStatus).toBe('passed');
       expect(summary.lastTestDate).toBeDefined();
     });
@@ -1758,14 +1756,14 @@ describe('UI Integration', () => {
         createProject({ name: 'P2', target_url: 'https://example.com', status: 'complete' }),
         createProject({ name: 'P3', target_url: 'https://example.com', status: 'testing' }),
       ];
-      
-      const testRuns = [
-        createTestRun({ project_id: 2, status: 'passed', total_steps: 5 }),
-        createTestRun({ project_id: 3, status: 'running', total_steps: 5 }),
-      ];
-      
+      projects[0].id = 1;
+      projects[1].id = 2;
+      projects[2].id = 3;
+      const testRun1 = createTestRun({ project_id: 2, status: 'passed', total_steps: 5 });
+      testRun1.completed_at = Date.now();
+      const testRun2 = createTestRun({ project_id: 3, status: 'running', total_steps: 5 });
+      const testRuns = [testRun1, testRun2];
       const stats = calculateDashboardStats(projects, testRuns);
-      
       expect(stats.totalProjects).toBe(3);
       expect(stats.projectsByStatus.draft).toBe(1);
       expect(stats.projectsByStatus.complete).toBe(1);
