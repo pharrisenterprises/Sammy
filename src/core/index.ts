@@ -4,7 +4,8 @@
  * @version 1.0.0
  * 
  * Unified export for all core functionality including data types,
- * storage layer, replay engine, test orchestrator, and background service.
+ * storage layer, replay engine, test orchestrator, background service,
+ * and CSV processing.
  * 
  * ## Module Overview
  * 
@@ -23,6 +24,9 @@
  * ### Background (`@/core/background`)
  * Service worker: Message routing, tab lifecycle, script injection
  * 
+ * ### CSV (`@/core/csv`)
+ * Data import: CSV/Excel parsing, field mapping, validation
+ * 
  * ## Quick Start
  * ```typescript
  * import { 
@@ -40,6 +44,9 @@
  *   
  *   // Background
  *   createMessageRouter,
+ *   
+ *   // CSV
+ *   createCSVProcessingService,
  * } from '@/core';
  * ```
  */
@@ -50,6 +57,32 @@
 
 // Re-export all types module exports
 export * from './types';
+
+// ============================================================================
+// IMPORTS FOR RESET FUNCTION
+// ============================================================================
+
+import {
+  resetMemoryStorage,
+  resetChromeStorage,
+  resetIndexedDBStorage,
+  resetStorageManager,
+} from './storage';
+
+import {
+  resetElementFinder,
+  resetActionExecutor,
+  resetStepExecutor,
+} from './replay';
+
+import { resetTabManager } from './orchestrator';
+
+import {
+  resetMessageRouter,
+  resetBackgroundTabManager,
+} from './background';
+
+import { resetAllCSVSingletons } from './csv';
 
 // ============================================================================
 // STORAGE MODULE
@@ -81,6 +114,14 @@ export * from './orchestrator';
 // Note: DEFAULT_TAB_MANAGER_CONFIG conflicts with orchestrator module
 // Import directly from '@/core/background' when needed
 export * from './background';
+
+// ============================================================================
+// CSV MODULE
+// ============================================================================
+
+// Note: ValidationResult, ValidationError, ValidationWarning conflict with other modules
+// These are re-exported with CSV prefix: CSVValidationResult, CSVValidationError, CSVValidationWarning
+export * from './csv';
 
 // ============================================================================
 // MODULE VERSION
@@ -120,7 +161,39 @@ export const ALL_DEFAULTS = {
     handlerTimeout: 30000,
     injectionDelay: 100,
   },
+  csv: {
+    similarityThreshold: 0.3,
+    previewRowCount: 10,
+    maxEmptyCellRatio: 0.5,
+    minMappedFields: 1,
+  },
 } as const;
+
+/**
+ * Reset all singletons (for testing)
+ */
+export function resetAllSingletons(): void {
+  // Storage
+  resetMemoryStorage();
+  resetChromeStorage();
+  resetIndexedDBStorage();
+  resetStorageManager();
+  
+  // Replay
+  resetElementFinder();
+  resetActionExecutor();
+  resetStepExecutor();
+  
+  // Orchestrator
+  resetTabManager();
+  
+  // Background
+  resetMessageRouter();
+  resetBackgroundTabManager();
+  
+  // CSV
+  resetAllCSVSingletons();
+}
 
 /**
  * Note: To access individual module exports when there are naming conflicts,
