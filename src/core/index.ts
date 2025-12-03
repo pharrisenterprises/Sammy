@@ -30,6 +30,9 @@
  * ### Content (`@/core/content`)
  * Page automation: Recording, replay, cross-context messaging, notifications
  * 
+ * ### UI (`@/core/ui`)
+ * Component contracts: Props, state, callbacks for React pages
+ * 
  * ## Quick Start
  * ```typescript
  * import { 
@@ -54,6 +57,9 @@
  *   // Content
  *   createContextBridge,
  *   createNotificationUI,
+ *   
+ *   // UI
+ *   createUIStateManager,
  * } from '@/core';
  * ```
  */
@@ -92,6 +98,8 @@ import {
 import { resetAllCSVSingletons } from './csv';
 
 import { resetAllContentSingletons } from './content';
+
+import { resetAllUISingletons } from './ui';
 
 // ============================================================================
 // STORAGE MODULE
@@ -139,6 +147,123 @@ export * from './csv';
 // Note: formatStepProgress, formatRowProgress, formatReplayProgress are content-specific
 // For other progress formatting, see respective modules
 export * from './content';
+
+// ============================================================================
+// UI MODULE
+// ============================================================================
+
+export {
+  // Shared types
+  type LoadingState,
+  type ErrorState,
+  type PaginationState,
+  type SortConfig,
+  type FilterConfig,
+  type LogLevel,
+  type LogEntry,
+  
+  // Dashboard types
+  type ProjectSummary,
+  type DashboardStats,
+  type CreateProjectData,
+  type EditProjectData,
+  type DashboardProps,
+  
+  // Recorder types
+  type StepDisplayItem,
+  type RecordingStatus,
+  type RecorderState,
+  type StepEditData,
+  type RecorderProps,
+  
+  // Field Mapper types
+  type CSVPreview,
+  type FieldMappingItem,
+  type MappingValidation,
+  type FieldMapperState,
+  type FieldMapperProps,
+  
+  // Test Runner types
+  type TestExecutionStatus,
+  type StepExecutionStatus,
+  type StepResult,
+  type RowResult,
+  type TestProgress,
+  type TestRunnerState,
+  type TestRunnerProps,
+  
+  // Dialog types
+  type ConfirmDialogProps,
+  type AlertDialogProps,
+  
+  // UI State Manager types
+  type Toast,
+  type UIState,
+  type StateChangeListener,
+  type PartialUIState,
+  type UIStateManagerConfig,
+  type StateSelector,
+  
+  // Constants
+  DEFAULT_PAGE_SIZE,
+  DEFAULT_LOG_LIMIT,
+  STATUS_COLORS,
+  STATUS_LABELS,
+  LOG_LEVEL_COLORS,
+  LOG_LEVEL_ICONS,
+  DEFAULT_STATE_MANAGER_CONFIG,
+  UI_VERSION,
+  UI_DEFAULTS,
+  RECORDING_STATUSES,
+  TEST_EXECUTION_STATUSES,
+  STEP_EXECUTION_STATUSES,
+  
+  // Helper functions (IUIComponents)
+  createEmptyLoadingState,
+  createLoadingState,
+  createEmptyErrorState,
+  createErrorState,
+  createLogEntry,
+  createInitialTestProgress,
+  createProjectSummary,
+  calculateDashboardStats,
+  formatDuration as formatUIDuration,
+  formatTimestamp,
+  formatRelativeTime,
+  
+  // UIStateManager
+  createInitialUIState,
+  UIStateManager,
+  createUIStateManager,
+  createLimitedLogManager,
+  createTransientManager,
+  getUIStateManager,
+  resetUIStateManager,
+  selectors,
+  
+  // Utility functions
+  isRecordingActive,
+  canStartRecording,
+  canStopRecording,
+  isTestRunning,
+  isTestTerminal,
+  canStartTest,
+  canStopTest,
+  canPauseTest,
+  canResumeTest,
+  isStepPassed,
+  isStepFailed,
+  isStepPending,
+  isStepComplete,
+  calculateProgressPercentage,
+  getStatusColor,
+  getStatusLabel,
+  formatProgressText,
+  formatPassRate,
+  getLogLevelColor,
+  getLogLevelIcon,
+  resetAllUISingletons,
+} from './ui';
 
 // ============================================================================
 // MODULE VERSION
@@ -190,6 +315,12 @@ export const ALL_DEFAULTS = {
     animationDuration: 300,
     extensionTimeout: 30000,
   },
+  ui: {
+    pageSize: 10,
+    logLimit: 500,
+    toastDuration: 5000,
+    maxToasts: 5,
+  },
 } as const;
 
 /**
@@ -219,6 +350,9 @@ export function resetAllSingletons(): void {
   
   // Content
   resetAllContentSingletons();
+  
+  // UI
+  resetAllUISingletons();
 }
 
 /**
