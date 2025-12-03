@@ -15,16 +15,18 @@ import {
   type Step,
   type Project,
   type TestRun,
-  type Field,
+  type ParsedField,
   type LocatorBundle,
   createStep,
+  createClickStep,
+  createInputStep,
   createProject,
   createTestRun,
-  createField,
+  createParsedField,
   createBundle,
-  isStepEvent,
-  isProject,
-  isTerminalStatus as isTestRunTerminal,
+  isValidStepEvent,
+  isProjectComplete,
+  calculatePassRate,
   
   // Storage
   type IStorageService,
@@ -33,15 +35,23 @@ import {
   
   // Replay
   type ExecutionContext,
-  ReplayStateManager,
+  type StepExecutionResult,
+  type SessionSummary,
+  createReplayConfig,
+  createReplayStateManager,
+  resetReplayStateManager,
+  ReplaySession,
   createReplaySession,
+  createSingleRunSession,
   createDataDrivenSession,
+  clearCurrentSession,
+  DEFAULT_SESSION_CONFIG,
   
   // Orchestrator
   type OrchestratorConfig,
   type OrchestratorProgress,
   createTestOrchestrator,
-  createMockTabManager,
+  createOrchestratorMockTabManager as createMockTabManager,
   isTerminalState,
   isActiveState,
   calculateOverallProgress,
@@ -111,6 +121,53 @@ import {
   NOTIFICATION_TYPES,
   PAGE_SCRIPT_SOURCE,
   CONTENT_SCRIPT_SOURCE,
+  
+  // UI
+  type LoadingState,
+  type ErrorState,
+  type LogEntry,
+  type Toast,
+  type UIState,
+  type ProjectSummary,
+  type DashboardStats,
+  type TestProgress,
+  type RecordingStatus,
+  type TestExecutionStatus,
+  createUIStateManager,
+  createEmptyLoadingState,
+  createLoadingState,
+  createEmptyErrorState,
+  createErrorState,
+  createLogEntry,
+  createInitialTestProgress,
+  createProjectSummary,
+  calculateDashboardStats,
+  formatUIDuration,
+  formatTimestamp,
+  formatRelativeTime,
+  isRecordingActive,
+  canStartRecording,
+  canStopRecording,
+  isTestRunning,
+  isTestTerminal,
+  canStartTest,
+  canStopTest,
+  isStepPassed,
+  isStepFailed,
+  isStepComplete,
+  calculateProgressPercentage,
+  getStatusColor,
+  getStatusLabel,
+  formatProgressText,
+  formatPassRate,
+  selectors,
+  resetAllUISingletons,
+  UI_DEFAULTS,
+  STATUS_COLORS,
+  STATUS_LABELS,
+  RECORDING_STATUSES,
+  TEST_EXECUTION_STATUSES,
+  STEP_EXECUTION_STATUSES,
   
   // Core utilities
   CORE_VERSION,
@@ -1542,6 +1599,516 @@ describe('End-to-End Workflows', () => {
 });
 
 // ============================================================================
+// UI INTEGRATION TESTS
+// ============================================================================
+
+describe('UI Integration', () => {
+  describe('UIStateManager with core types', () => {
+    it('should manage loading state', () => {
+      const manager = createUIStateManager({ persistTheme: false });
+      
+      manager.setLoading(true, 'Loading projects...');
+      
+      const state = manager.getLoadingState();
+      expect(state.isLoading).toBe(true);
+      expect(state.message).toBe('Loading projects...');
+      
+      manager.setLoadingProgress(50, 'Processing...');
+      expect(manager.getLoadingState().progress).toBe(50);
+      
+      manager.clearLoading();
+      expect(manager.getLoadingState().isLoading).toBe(false);
+      
+      manager.destroy();
+    });
+    
+    it('should manage error state', () => {
+      const manager = createUIStateManager({ persistTheme: false });
+      
+      manager.setError('Failed to load project', { code: 'E001', recoverable: true });
+      
+      const state = manager.getErrorState();
+      expect(state.hasError).toBe(true);
+      expect(state.message).toBe('Failed to load project');
+      expect(state.code).toBe('E001');
+      expect(state.recoverable).toBe(true);
+      
+      manager.clearError();
+      expect(manager.getErrorState().hasError).toBe(false);
+      
+      manager.destroy();
+    });
+    
+    it('should manage logs with trimming', () => {
+      const manager = createUIStateManager({ 
+        persistTheme: false,
+        maxLogs: 5,
+      });
+      
+      // Add more logs than limit
+      for (let i = 0; i < 10; i++) {
+        manager.addLog('info', `Log ${i}`);
+      }
+      
+      const logs = manager.getLogs();
+      expect(logs).toHaveLength(5);
+      expect(logs[0].message).toBe('Log 5'); // Oldest kept
+      expect(logs[4].message).toBe('Log 9'); // Newest
+      
+      manager.destroy();
+    });
+    
+    it('should manage toast notifications', () => {
+      const manager = createUIStateManager({ persistTheme: false });
+      
+      const toast = manager.toastSuccess('Project saved!', 'Success');
+      
+      expect(toast.type).toBe('success');
+      expect(toast.message).toBe('Project saved!');
+      expect(toast.title).toBe('Success');
+      
+      expect(manager.getToasts()).toHaveLength(1);
+      
+      manager.dismissToast(toast.id);
+      expect(manager.getToasts()).toHaveLength(0);
+      
+      manager.destroy();
+    });
+    
+    it('should track busy operations', () => {
+      const manager = createUIStateManager({ persistTheme: false });
+      
+      manager.startOperation('fetch-projects');
+      manager.startOperation('fetch-test-runs');
+      
+      expect(manager.isBusy()).toBe(true);
+      expect(manager.isOperationInProgress('fetch-projects')).toBe(true);
+      
+      manager.endOperation('fetch-projects');
+      expect(manager.isBusy()).toBe(true); // Still has one operation
+      
+      manager.endOperation('fetch-test-runs');
+      expect(manager.isBusy()).toBe(false);
+      
+      manager.destroy();
+    });
+    
+    it('should notify subscribers on state change', () => {
+      const manager = createUIStateManager({ persistTheme: false });
+      const changes: UIState[] = [];
+      
+      manager.subscribe((state) => {
+        changes.push(state);
+      });
+      
+      manager.setLoading(true);
+      manager.logInfo('Test log');
+      manager.toastInfo('Test toast');
+      
+      expect(changes).toHaveLength(3);
+      
+      manager.destroy();
+    });
+  });
+  
+  describe('Dashboard stats with Project and TestRun', () => {
+    it('should create project summary from Project type', () => {
+      const project = createProject({
+        name: 'E2E Test Project',
+        target_url: 'https://example.com',
+        status: 'complete',
+      });
+      project.id = 1;
+      project.recorded_steps = [
+        createClickStep('Login', createTestBundle()),
+        createInputStep('Username', 'test', createTestBundle()),
+      ];
+      
+      const summary = createProjectSummary(project);
+      
+      expect(summary.id).toBe(1);
+      expect(summary.name).toBe('E2E Test Project');
+      expect(summary.status).toBe('complete');
+      expect(summary.stepCount).toBe(2);
+    });
+    
+    it('should create project summary with test run info', () => {
+      const project = createProject({
+        name: 'Test Project',
+        target_url: 'https://example.com',
+      });
+      project.id = 1;
+      
+      const testRun = createTestRun({
+        project_id: 1,
+        status: 'passed',
+        total_steps: 5,
+      });
+      testRun.end_time = Date.now();
+      
+      const summary = createProjectSummary(project, testRun);
+      
+      expect(summary.lastTestStatus).toBe('passed');
+      expect(summary.lastTestDate).toBeDefined();
+    });
+    
+    it('should calculate dashboard stats', () => {
+      const projects = [
+        createProject({ name: 'P1', target_url: 'https://example.com', status: 'draft' }),
+        createProject({ name: 'P2', target_url: 'https://example.com', status: 'complete' }),
+        createProject({ name: 'P3', target_url: 'https://example.com', status: 'testing' }),
+      ];
+      
+      const testRuns = [
+        createTestRun({ project_id: 2, status: 'passed', total_steps: 5 }),
+        createTestRun({ project_id: 3, status: 'running', total_steps: 5 }),
+      ];
+      
+      const stats = calculateDashboardStats(projects, testRuns);
+      
+      expect(stats.totalProjects).toBe(3);
+      expect(stats.projectsByStatus.draft).toBe(1);
+      expect(stats.projectsByStatus.complete).toBe(1);
+      expect(stats.projectsByStatus.testing).toBe(1);
+      expect(stats.activeTests).toBe(1); // running
+    });
+  });
+  
+  describe('Progress tracking', () => {
+    it('should create initial test progress', () => {
+      const progress = createInitialTestProgress();
+      
+      expect(progress.currentRow).toBe(0);
+      expect(progress.totalRows).toBe(0);
+      expect(progress.currentStep).toBe(0);
+      expect(progress.totalSteps).toBe(0);
+      expect(progress.percentage).toBe(0);
+    });
+    
+    it('should calculate progress percentage', () => {
+      const progress: TestProgress = {
+        currentRow: 2,
+        totalRows: 5,
+        currentStep: 3,
+        totalSteps: 10,
+        rowsPassed: 1,
+        rowsFailed: 0,
+        stepsPassed: 2,
+        stepsFailed: 0,
+        percentage: 0,
+        elapsedTime: 5000,
+      };
+      
+      const percentage = calculateProgressPercentage(progress);
+      
+      // (1 row * 10 steps) + (2 passed + 0 failed) = 12 / 50 = 24%
+      expect(percentage).toBe(24);
+    });
+    
+    it('should format progress text', () => {
+      const singleRowProgress: TestProgress = {
+        currentRow: 1,
+        totalRows: 1,
+        currentStep: 3,
+        totalSteps: 5,
+        rowsPassed: 0,
+        rowsFailed: 0,
+        stepsPassed: 2,
+        stepsFailed: 0,
+        percentage: 40,
+        elapsedTime: 1000,
+      };
+      
+      expect(formatProgressText(singleRowProgress)).toBe('Step 3 of 5');
+      
+      const multiRowProgress: TestProgress = {
+        ...singleRowProgress,
+        currentRow: 2,
+        totalRows: 10,
+      };
+      
+      expect(formatProgressText(multiRowProgress)).toBe('Row 2/10 - Step 3/5');
+    });
+  });
+  
+  describe('Status helpers', () => {
+    it('should check recording status', () => {
+      expect(isRecordingActive('recording')).toBe(true);
+      expect(isRecordingActive('idle')).toBe(false);
+      
+      expect(canStartRecording('idle')).toBe(true);
+      expect(canStartRecording('paused')).toBe(true);
+      expect(canStartRecording('recording')).toBe(false);
+      
+      expect(canStopRecording('recording')).toBe(true);
+      expect(canStopRecording('paused')).toBe(true);
+      expect(canStopRecording('idle')).toBe(false);
+    });
+    
+    it('should check test execution status', () => {
+      expect(isTestRunning('running')).toBe(true);
+      expect(isTestRunning('preparing')).toBe(true);
+      expect(isTestRunning('idle')).toBe(false);
+      
+      expect(isTestTerminal('completed')).toBe(true);
+      expect(isTestTerminal('failed')).toBe(true);
+      expect(isTestTerminal('cancelled')).toBe(true);
+      expect(isTestTerminal('running')).toBe(false);
+      
+      expect(canStartTest('idle')).toBe(true);
+      expect(canStartTest('completed')).toBe(true);
+      expect(canStartTest('running')).toBe(false);
+      
+      expect(canStopTest('running')).toBe(true);
+      expect(canStopTest('idle')).toBe(false);
+    });
+    
+    it('should check step execution status', () => {
+      expect(isStepPassed('passed')).toBe(true);
+      expect(isStepPassed('failed')).toBe(false);
+      
+      expect(isStepFailed('failed')).toBe(true);
+      expect(isStepFailed('passed')).toBe(false);
+      
+      expect(isStepComplete('passed')).toBe(true);
+      expect(isStepComplete('failed')).toBe(true);
+      expect(isStepComplete('skipped')).toBe(true);
+      expect(isStepComplete('pending')).toBe(false);
+      expect(isStepComplete('running')).toBe(false);
+    });
+  });
+  
+  describe('Formatting functions', () => {
+    it('should format duration', () => {
+      expect(formatUIDuration(500)).toBe('500ms');
+      expect(formatUIDuration(5000)).toBe('5s');
+      expect(formatUIDuration(90000)).toBe('1m 30s');
+      expect(formatUIDuration(3600000)).toBe('1h 0m');
+    });
+    
+    it('should format timestamp', () => {
+      const now = Date.now();
+      const formatted = formatTimestamp(now);
+      
+      // Should contain date separators
+      expect(formatted).toMatch(/\d/);
+    });
+    
+    it('should format relative time', () => {
+      const now = Date.now();
+      
+      expect(formatRelativeTime(now - 30000)).toBe('just now');
+      expect(formatRelativeTime(now - 5 * 60 * 1000)).toBe('5m ago');
+      expect(formatRelativeTime(now - 2 * 60 * 60 * 1000)).toBe('2h ago');
+      expect(formatRelativeTime(now - 3 * 24 * 60 * 60 * 1000)).toBe('3d ago');
+    });
+    
+    it('should format pass rate', () => {
+      expect(formatPassRate(8, 10)).toBe('80%');
+      expect(formatPassRate(0, 10)).toBe('0%');
+      expect(formatPassRate(10, 10)).toBe('100%');
+      expect(formatPassRate(0, 0)).toBe('0%');
+    });
+  });
+  
+  describe('Status colors and labels', () => {
+    it('should get status colors', () => {
+      expect(getStatusColor('draft')).toBe('gray');
+      expect(getStatusColor('running')).toBe('blue');
+      expect(getStatusColor('passed')).toBe('green');
+      expect(getStatusColor('failed')).toBe('red');
+      expect(getStatusColor('unknown')).toBe('gray');
+    });
+    
+    it('should get status labels', () => {
+      expect(getStatusLabel('draft')).toBe('Draft');
+      expect(getStatusLabel('running')).toBe('Running');
+      expect(getStatusLabel('passed')).toBe('Passed');
+      expect(getStatusLabel('unknown')).toBe('unknown');
+    });
+  });
+  
+  describe('Selectors', () => {
+    it('should select state properties', () => {
+      const manager = createUIStateManager({ persistTheme: false });
+      
+      manager.setLoading(true, 'Test', 50);
+      manager.setError('Error');
+      manager.logInfo('Log 1');
+      manager.logInfo('Log 2');
+      manager.toastInfo('Toast');
+      
+      const state = manager.getState();
+      
+      expect(selectors.isLoading(state)).toBe(true);
+      expect(selectors.loadingMessage(state)).toBe('Test');
+      expect(selectors.loadingProgress(state)).toBe(50);
+      expect(selectors.hasError(state)).toBe(true);
+      expect(selectors.errorMessage(state)).toBe('Error');
+      expect(selectors.logCount(state)).toBe(2);
+      expect(selectors.toastCount(state)).toBe(1);
+      expect(selectors.theme(state)).toBe('system');
+      
+      manager.destroy();
+    });
+  });
+  
+  describe('Constants', () => {
+    it('should have UI defaults', () => {
+      expect(UI_DEFAULTS.PAGE_SIZE).toBe(10);
+      expect(UI_DEFAULTS.LOG_LIMIT).toBe(500);
+      expect(UI_DEFAULTS.TOAST_DURATION).toBe(5000);
+      expect(UI_DEFAULTS.MAX_TOASTS).toBe(5);
+    });
+    
+    it('should have status colors for all statuses', () => {
+      expect(STATUS_COLORS.draft).toBeDefined();
+      expect(STATUS_COLORS.running).toBeDefined();
+      expect(STATUS_COLORS.passed).toBeDefined();
+      expect(STATUS_COLORS.failed).toBeDefined();
+    });
+    
+    it('should have recording statuses', () => {
+      expect(RECORDING_STATUSES.IDLE).toBe('idle');
+      expect(RECORDING_STATUSES.RECORDING).toBe('recording');
+      expect(RECORDING_STATUSES.PAUSED).toBe('paused');
+      expect(RECORDING_STATUSES.SAVING).toBe('saving');
+    });
+    
+    it('should have test execution statuses', () => {
+      expect(TEST_EXECUTION_STATUSES.IDLE).toBe('idle');
+      expect(TEST_EXECUTION_STATUSES.RUNNING).toBe('running');
+      expect(TEST_EXECUTION_STATUSES.COMPLETED).toBe('completed');
+      expect(TEST_EXECUTION_STATUSES.FAILED).toBe('failed');
+    });
+    
+    it('should have step execution statuses', () => {
+      expect(STEP_EXECUTION_STATUSES.PENDING).toBe('pending');
+      expect(STEP_EXECUTION_STATUSES.RUNNING).toBe('running');
+      expect(STEP_EXECUTION_STATUSES.PASSED).toBe('passed');
+      expect(STEP_EXECUTION_STATUSES.FAILED).toBe('failed');
+      expect(STEP_EXECUTION_STATUSES.SKIPPED).toBe('skipped');
+    });
+  });
+  
+  describe('UI State → Test Execution flow', () => {
+    it('should track test execution through UI state', () => {
+      const manager = createUIStateManager({ persistTheme: false });
+      
+      // 1. Start loading
+      manager.setLoading(true, 'Loading project...');
+      manager.startOperation('load-project');
+      
+      expect(manager.isBusy()).toBe(true);
+      expect(selectors.isLoading(manager.getState())).toBe(true);
+      
+      // 2. Project loaded
+      manager.endOperation('load-project');
+      manager.clearLoading();
+      manager.logSuccess('Project loaded');
+      
+      // 3. Start test execution
+      manager.setLoading(true, 'Executing tests...', 0);
+      manager.startOperation('test-execution');
+      
+      // 4. Update progress
+      for (let step = 1; step <= 5; step++) {
+        const progress = (step / 5) * 100;
+        manager.setLoadingProgress(progress, `Step ${step} of 5`);
+        manager.logInfo(`Executing step ${step}`);
+      }
+      
+      // 5. Test complete
+      manager.endOperation('test-execution');
+      manager.clearLoading();
+      manager.toastSuccess('All tests passed!');
+      manager.logSuccess('Test execution completed');
+      
+      // Verify final state
+      expect(manager.isBusy()).toBe(false);
+      expect(manager.getToasts()).toHaveLength(1);
+      expect(manager.getLogs().filter(l => l.level === 'success')).toHaveLength(2);
+      
+      manager.destroy();
+    });
+    
+    it('should handle test failure through UI state', () => {
+      const manager = createUIStateManager({ persistTheme: false });
+      
+      // Start test
+      manager.setLoading(true, 'Running test...');
+      manager.startOperation('test');
+      
+      // Test fails
+      manager.setError('Step 3 failed: Element not found', { recoverable: true });
+      manager.logError('Element not found', { stepIndex: 3 });
+      manager.toastError('Test failed');
+      
+      // End test
+      manager.endOperation('test');
+      manager.clearLoading();
+      
+      // Verify error state
+      expect(manager.getErrorState().hasError).toBe(true);
+      expect(manager.getToasts()[0].type).toBe('error');
+      expect(manager.getLogsByLevel('error')).toHaveLength(1);
+      
+      manager.destroy();
+    });
+  });
+  
+  describe('Dashboard → Recorder → Runner flow', () => {
+    it('should track full workflow through UI state', () => {
+      const manager = createUIStateManager({ persistTheme: false });
+      
+      // Dashboard: Load projects
+      manager.logInfo('Loading dashboard');
+      manager.startOperation('fetch-projects');
+      
+      const projects = [
+        createProject({ name: 'Test', target_url: 'https://example.com' }),
+      ];
+      projects[0].id = 1;
+      
+      manager.endOperation('fetch-projects');
+      manager.logSuccess(`Loaded ${projects.length} projects`);
+      
+      // Recorder: Start recording
+      manager.logInfo('Starting recorder');
+      manager.toastInfo('Recording started');
+      
+      // Simulate recording steps
+      const recordedEvents = ['click', 'input', 'click'];
+      recordedEvents.forEach((event, i) => {
+        manager.logInfo(`Recorded: ${event}`, { stepIndex: i });
+      });
+      
+      manager.toastSuccess('Recording saved');
+      
+      // Runner: Execute test
+      manager.setLoading(true, 'Preparing test...');
+      manager.logInfo('Test runner started');
+      
+      recordedEvents.forEach((_, i) => {
+        manager.setLoadingProgress(((i + 1) / recordedEvents.length) * 100);
+        manager.logInfo(`Step ${i + 1} passed`);
+      });
+      
+      manager.clearLoading();
+      manager.toastSuccess('Test completed');
+      manager.logSuccess('All steps passed');
+      
+      // Verify workflow
+      const logs = manager.getLogs();
+      expect(logs.length).toBeGreaterThan(5);
+      expect(logs.filter(l => l.level === 'success').length).toBeGreaterThanOrEqual(3);
+      
+      manager.destroy();
+    });
+  });
+});
+
+// ============================================================================
 // VERSION AND RESET TESTS
 // ============================================================================
 
@@ -1557,12 +2124,19 @@ describe('Core Module Utilities', () => {
     expect(ALL_DEFAULTS.background).toBeDefined();
     expect(ALL_DEFAULTS.csv).toBeDefined();
     expect(ALL_DEFAULTS.content).toBeDefined();
+    expect(ALL_DEFAULTS.ui).toBeDefined();
     
     // Verify content defaults
     expect(ALL_DEFAULTS.content.stepTimeout).toBe(30000);
     expect(ALL_DEFAULTS.content.notificationDuration).toBe(3000);
     expect(ALL_DEFAULTS.content.animationDuration).toBe(300);
     expect(ALL_DEFAULTS.content.extensionTimeout).toBe(30000);
+    
+    // Verify UI defaults
+    expect(ALL_DEFAULTS.ui.pageSize).toBe(10);
+    expect(ALL_DEFAULTS.ui.logLimit).toBe(500);
+    expect(ALL_DEFAULTS.ui.toastDuration).toBe(5000);
+    expect(ALL_DEFAULTS.ui.maxToasts).toBe(5);
   });
   
   it('should export CSV_DEFAULTS', () => {
@@ -1577,7 +2151,14 @@ describe('Core Module Utilities', () => {
     expect(CONTENT_DEFAULTS.ANIMATION_DURATION).toBe(300);
   });
   
-  it('should reset all singletons including content', () => {
+  it('should export UI_DEFAULTS', () => {
+    expect(UI_DEFAULTS.PAGE_SIZE).toBe(10);
+    expect(UI_DEFAULTS.LOG_LIMIT).toBe(500);
+    expect(UI_DEFAULTS.TOAST_DURATION).toBe(5000);
+    expect(UI_DEFAULTS.MAX_TOASTS).toBe(5);
+  });
+  
+  it('should reset all singletons including UI', () => {
     // Create some state
     const router = createMessageRouter();
     router.register('test', async () => createSuccessResponse());
@@ -1588,11 +2169,16 @@ describe('Core Module Utilities', () => {
     const mockBridge = createMockContextBridge();
     mockBridge.onPageMessage(() => {});
     
+    const uiManager = createUIStateManager({ persistTheme: false });
+    uiManager.logInfo('Test');
+    
     // Reset
     resetAllSingletons();
     
     // Verify state is cleared
     expect(true).toBe(true);
+    
+    uiManager.destroy();
   });
   
   it('should reset content singletons separately', () => {
@@ -1607,6 +2193,13 @@ describe('Core Module Utilities', () => {
     csvService.parseString('Name\nTest');
     
     resetAllCSVSingletons();
+    
+    // If no errors, reset worked
+    expect(true).toBe(true);
+  });
+  
+  it('should reset UI singletons separately', () => {
+    resetAllUISingletons();
     
     // If no errors, reset worked
     expect(true).toBe(true);
