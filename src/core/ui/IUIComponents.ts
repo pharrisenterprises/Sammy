@@ -1066,11 +1066,8 @@ export function calculateDashboardStats(
 ): DashboardStats {
   const projectsByStatus: Record<ProjectStatus, number> = {
     draft: 0,
-    recording: 0,
-    recorded: 0,
-    mapped: 0,
     testing: 0,
-    completed: 0,
+    complete: 0,
   };
   
   for (const project of projects) {
