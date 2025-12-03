@@ -5,7 +5,7 @@
  * 
  * Unified export for all core functionality including data types,
  * storage layer, replay engine, test orchestrator, background service,
- * and CSV processing.
+ * CSV processing, and content script infrastructure.
  * 
  * ## Module Overview
  * 
@@ -27,6 +27,9 @@
  * ### CSV (`@/core/csv`)
  * Data import: CSV/Excel parsing, field mapping, validation
  * 
+ * ### Content (`@/core/content`)
+ * Page automation: Recording, replay, cross-context messaging, notifications
+ * 
  * ## Quick Start
  * ```typescript
  * import { 
@@ -47,6 +50,10 @@
  *   
  *   // CSV
  *   createCSVProcessingService,
+ *   
+ *   // Content
+ *   createContextBridge,
+ *   createNotificationUI,
  * } from '@/core';
  * ```
  */
@@ -83,6 +90,8 @@ import {
 } from './background';
 
 import { resetAllCSVSingletons } from './csv';
+
+import { resetAllContentSingletons } from './content';
 
 // ============================================================================
 // STORAGE MODULE
@@ -122,6 +131,14 @@ export * from './background';
 // Note: ValidationResult, ValidationError, ValidationWarning conflict with other modules
 // These are re-exported with CSV prefix: CSVValidationResult, CSVValidationError, CSVValidationWarning
 export * from './csv';
+
+// ============================================================================
+// CONTENT MODULE
+// ============================================================================
+
+// Note: formatStepProgress, formatRowProgress, formatReplayProgress are content-specific
+// For other progress formatting, see respective modules
+export * from './content';
 
 // ============================================================================
 // MODULE VERSION
@@ -167,6 +184,12 @@ export const ALL_DEFAULTS = {
     maxEmptyCellRatio: 0.5,
     minMappedFields: 1,
   },
+  content: {
+    stepTimeout: 30000,
+    notificationDuration: 3000,
+    animationDuration: 300,
+    extensionTimeout: 30000,
+  },
 } as const;
 
 /**
@@ -193,6 +216,9 @@ export function resetAllSingletons(): void {
   
   // CSV
   resetAllCSVSingletons();
+  
+  // Content
+  resetAllContentSingletons();
 }
 
 /**
