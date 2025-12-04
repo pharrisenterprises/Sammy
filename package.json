@@ -11,8 +11,8 @@
     "preview": "vite preview",
     "postbuild": "node ./scripts/postbuild.js",
     "watch:build": "nodemon --watch src --ext js,jsx,ts,tsx,json,css --exec \"npm run build && npm run postbuild\"",
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "test": "vitest run --config vitest.config.test.ts",
+    "test:watch": "vitest --config vitest.config.test.ts",
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
