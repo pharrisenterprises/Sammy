@@ -230,6 +230,22 @@ export {
   createIframeInfo,
   findIframesInDocument,
   
+  // ShadowDOMHandler
+  type ShadowHostInfo,
+  type ShadowDOMHandlerConfig,
+  DEFAULT_SHADOW_HANDLER_CONFIG,
+  ShadowDOMHandler,
+  createShadowDOMHandler,
+  createDebugShadowHandler,
+  getShadowDOMHandler,
+  resetShadowDOMHandler,
+  hasShadowRoot,
+  getShadowRoot,
+  getShadowRootMode,
+  createShadowHostInfo,
+  generateLocalXPath,
+  findAllShadowHosts,
+  
   // ContextBridge
   type ExtensionMessageHandler,
   type PageMessageHandler,
@@ -448,6 +464,8 @@ export const ALL_DEFAULTS = {
     extensionTimeout: 30000,
     inputDebounce: 300,
     maxIframeDepth: 10,
+    maxShadowDepth: 10,
+    interceptedShadowProperty: '__realShadowRoot',
   },
   ui: {
     pageSize: 10,
