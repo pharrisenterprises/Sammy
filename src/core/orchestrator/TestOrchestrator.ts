@@ -1,875 +1,1045 @@
 /**
- * TestOrchestrator - Test Execution Coordinator
+ * TestOrchestrator - Main orchestrator coordinating all execution components
  * @module core/orchestrator/TestOrchestrator
  * @version 1.0.0
  * 
- * Coordinates end-to-end test execution including tab management,
- * script injection, multi-row CSV execution, and result persistence.
+ * Coordinates the complete test execution lifecycle:
+ * - Tab management and script injection
+ * - Row iteration and step sequencing
+ * - Value injection from CSV data
+ * - Progress tracking and logging
+ * - Error handling and recovery
+ * - Result aggregation and TestRun creation
  * 
- * ## Execution Flow
- * 1. Load project data from storage
- * 2. Open target tab and inject content script
- * 3. Execute replay session (single or multi-row)
- * 4. Track progress and emit events
- * 5. Persist test run results
- * 6. Clean up resources
- * 
- * @example
- * ```typescript
- * const orchestrator = new TestOrchestrator(tabManager);
- * 
- * orchestrator.onProgress((progress) => {
- *   console.log(`Progress: ${progress.overallPercentage}%`);
- * });
- * 
- * const result = await orchestrator.run({ projectId: 42 });
- * ```
+ * @see test-orchestrator_breakdown.md for architecture details
  */
 
-import type { Step } from '../types/step';
-import type { Project } from '../types/project';
-import type { TestRunStatus } from '../types/test-run';
-import {
-  ReplaySession,
-  createReplaySession,
-  type SessionSummary,
-} from '../replay/ReplaySession';
-import type { StepExecutionResult } from '../replay/StepExecutor';
-import {
-  type ITestOrchestrator,
-  type ITabManager,
-  type OrchestratorLifecycle,
-  type OrchestratorConfig,
-  type OrchestratorProgress,
-  type OrchestratorResult,
-  type OrchestratorEvents,
-  type TabInfo,
-  type LogLevel,
-  type LogEntry,
-  type StepStatus,
-  type ProjectLoadedCallback,
-  type TabOpenedCallback,
-  type RowStartCallback,
-  type RowCompleteCallback,
-  type StepStartCallback,
-  type StepCompleteCallback,
-  type ProgressCallback,
-  type LogCallback,
-  type CompleteCallback,
-  type ErrorCallback,
-  type LifecycleCallback,
-  ORCHESTRATOR_TRANSITIONS,
-  DEFAULT_ORCHESTRATOR_CONFIG,
-} from './ITestOrchestrator';
+import { ProgressTracker } from './ProgressTracker';
+import { LogCollector } from './LogCollector';
+import { ResultAggregator, type ExecutionResult } from './ResultAggregator';
+import { TestRunBuilder, type TestRun } from './TestRunBuilder';
+import { ErrorHandler, type ErrorHandlingResult } from './ErrorHandler';
+import { StopController, isStopRequestedError } from './StopController';
+import { PauseController } from './PauseController';
 
 // ============================================================================
-// HELPER FUNCTIONS
+// TYPES
 // ============================================================================
 
 /**
- * Format timestamp for logs
+ * Execution status
  */
-function formatTimestamp(): string {
-  return new Date().toISOString();
+export type ExecutionStatus = 'idle' | 'running' | 'paused' | 'stopped' | 'completed' | 'failed';
+
+/**
+ * Orchestrator event type
+ */
+export type OrchestratorEventType = 
+  | 'started' 
+  | 'completed' 
+  | 'stopped' 
+  | 'paused' 
+  | 'resumed'
+  | 'progress'
+  | 'step_started'
+  | 'step_completed'
+  | 'row_started'
+  | 'row_completed'
+  | 'all';
+
+/**
+ * Orchestrator event
+ */
+export interface OrchestratorEvent {
+  /** Event type */
+  type: OrchestratorEventType;
+  /** Event data */
+  data: Record<string, unknown>;
+  /** Event timestamp */
+  timestamp: Date;
 }
 
 /**
- * Check if state transition is valid
+ * Test execution configuration
  */
-function isValidTransition(
-  from: OrchestratorLifecycle,
-  to: OrchestratorLifecycle
-): boolean {
-  return ORCHESTRATOR_TRANSITIONS[from]?.includes(to) ?? false;
+export interface TestConfig {
+  /** Project ID */
+  projectId: number;
+  /** Target URL to open */
+  targetUrl: string;
+  /** Recorded steps to execute */
+  steps: ExecutionStep[];
+  /** CSV data rows (empty array for single run) */
+  csvData: Record<string, string>[];
+  /** Field mappings (CSV column → step label) */
+  fieldMappings: FieldMapping[];
+  /** Execution options */
+  options?: ExecutionOptions;
 }
 
 /**
- * Build field mappings lookup from project parsed_fields
+ * Execution step definition
  */
-function buildFieldMappings(
-  parsedFields: Array<{ field_name: string; mapped: boolean; inputvarfields: string }>
-): Record<string, string> {
-  const mappings: Record<string, string> = {};
-  
-  for (const field of parsedFields) {
-    if (field.mapped && field.field_name && field.inputvarfields) {
-      mappings[field.field_name] = field.inputvarfields;
-    }
-  }
-  
-  return mappings;
+export interface ExecutionStep {
+  /** Step index */
+  index: number;
+  /** Step ID */
+  id?: string | number;
+  /** Step name/label */
+  label: string;
+  /** Event type */
+  event: 'click' | 'input' | 'enter' | 'open';
+  /** XPath or selector */
+  path?: string;
+  /** Selector string */
+  selector?: string;
+  /** Input value */
+  value?: string;
+  /** Element bundle for location */
+  bundle?: unknown;
+  /** X coordinate */
+  x?: number;
+  /** Y coordinate */
+  y?: number;
 }
 
 /**
- * Create initial step statuses from steps
+ * Field mapping definition
  */
-function createStepStatuses(steps: Step[]): StepStatus[] {
-  return steps.map((step, index) => ({
-    index,
-    name: step.label || `Step ${index + 1}`,
-    event: step.event,
-    status: 'pending',
-    duration: 0,
-  }));
+export interface FieldMapping {
+  /** CSV column name */
+  fieldName: string;
+  /** Step label to map to */
+  inputVarFields: string;
+  /** Whether mapping is active */
+  mapped: boolean;
 }
+
+/**
+ * Execution options
+ */
+export interface ExecutionOptions {
+  /** Delay between steps (ms). Default: 1000 */
+  stepDelay?: number;
+  /** Delay between rows (ms). Default: 2000 */
+  rowDelay?: number;
+  /** Step timeout (ms). Default: 30000 */
+  stepTimeout?: number;
+  /** Continue on error. Default: true */
+  continueOnError?: boolean;
+  /** Close tab after each row. Default: false */
+  closeTabAfterRow?: boolean;
+  /** Close tab after completion. Default: true */
+  closeTabAfterCompletion?: boolean;
+  /** Include debug logs. Default: false */
+  includeDebugLogs?: boolean;
+}
+
+/**
+ * Test run result
+ */
+export interface TestRunResult {
+  /** Success status */
+  success: boolean;
+  /** Execution result data */
+  result: ExecutionResult;
+  /** Created TestRun (if saved) */
+  testRun?: TestRun;
+  /** Execution duration (ms) */
+  duration: number;
+  /** Whether execution was stopped */
+  wasStopped: boolean;
+  /** Error message if failed */
+  error?: string;
+}
+
+/**
+ * Step execution result
+ */
+export interface StepExecutionResult {
+  /** Success status */
+  success: boolean;
+  /** Step index */
+  stepIndex: number;
+  /** Execution duration (ms) */
+  duration: number;
+  /** Error message if failed */
+  error?: string;
+}
+
+/**
+ * Row execution result
+ */
+export interface RowExecutionResult {
+  /** Success status */
+  success: boolean;
+  /** Row index */
+  rowIndex: number;
+  /** Steps passed */
+  passedSteps: number;
+  /** Steps failed */
+  failedSteps: number;
+  /** Steps skipped */
+  skippedSteps: number;
+  /** Row duration (ms) */
+  duration: number;
+}
+
+/**
+ * Orchestrator event listener
+ */
+export type OrchestratorEventListener = (event: OrchestratorEvent) => void;
+
+/**
+ * Tab operations interface (injected dependency)
+ */
+export interface ITabOperations {
+  openTab(url: string): Promise<{ success: boolean; tabId?: number; error?: string }>;
+  closeTab(tabId: number): Promise<{ success: boolean; error?: string }>;
+  injectScript(tabId: number): Promise<{ success: boolean; error?: string }>;
+  sendStepCommand(tabId: number, step: ExecutionStep): Promise<boolean>;
+}
+
+/**
+ * Storage operations interface (injected dependency)
+ */
+export interface IStorageOperations {
+  saveTestRun(testRun: TestRun): Promise<number>;
+}
+
+/**
+ * Orchestrator state snapshot
+ */
+export interface OrchestratorState {
+  /** Current execution status */
+  status: ExecutionStatus;
+  /** Progress data */
+  progress: {
+    percentage: number;
+    currentStep: number;
+    currentRow: number;
+    totalSteps: number;
+    totalRows: number;
+    passedSteps: number;
+    failedSteps: number;
+    skippedSteps: number;
+  };
+  /** Current tab ID */
+  currentTabId: number | null;
+  /** Execution start time */
+  startTime: Date | null;
+  /** Execution end time */
+  endTime: Date | null;
+  /** Error count */
+  errorCount: number;
+  /** Whether paused */
+  isPaused: boolean;
+}
+
+// ============================================================================
+// DEFAULT OPTIONS
+// ============================================================================
+
+/**
+ * Default execution options
+ */
+export const DEFAULT_EXECUTION_OPTIONS: Required<ExecutionOptions> = {
+  stepDelay: 1000,
+  rowDelay: 2000,
+  stepTimeout: 30000,
+  continueOnError: true,
+  closeTabAfterRow: false,
+  closeTabAfterCompletion: true,
+  includeDebugLogs: false,
+};
 
 // ============================================================================
 // TEST ORCHESTRATOR CLASS
 // ============================================================================
 
 /**
- * Coordinates test execution with tab management and result persistence
+ * TestOrchestrator - Main test execution coordinator
+ * 
+ * @example
+ * ```typescript
+ * const orchestrator = new TestOrchestrator(tabOps, storageOps);
+ * 
+ * // Subscribe to events
+ * orchestrator.on('progress', (event) => {
+ *   console.log(`Progress: ${event.data.percentage}%`);
+ * });
+ * 
+ * // Run test
+ * const result = await orchestrator.run({
+ *   projectId: 1,
+ *   targetUrl: 'https://example.com',
+ *   steps: recordedSteps,
+ *   csvData: csvRows,
+ *   fieldMappings: mappings,
+ * });
+ * 
+ * // Control execution
+ * orchestrator.pause();
+ * orchestrator.resume();
+ * orchestrator.stop();
+ * ```
  */
-export class TestOrchestrator implements ITestOrchestrator {
-  private tabManager: ITabManager;
-  private events: OrchestratorEvents;
-  
+export class TestOrchestrator {
+  // Dependencies
+  private tabOperations: ITabOperations;
+  private storageOperations: IStorageOperations | null;
+
+  // Controllers
+  private stopController: StopController;
+  private pauseController: PauseController;
+  private errorHandler: ErrorHandler;
+
+  // Trackers
+  private progressTracker: ProgressTracker | null = null;
+  private logCollector: LogCollector | null = null;
+  private resultAggregator: ResultAggregator | null = null;
+
   // State
-  private lifecycle: OrchestratorLifecycle = 'idle';
-  private project: Project | null = null;
-  private config: Required<Omit<OrchestratorConfig, 'projectId'>> & { projectId: number } | null = null;
-  private tab: TabInfo | null = null;
-  private session: ReplaySession | null = null;
-  private testRunId: number | null = null;
-  
-  // Progress tracking
-  private logs: LogEntry[] = [];
-  private stepStatuses: StepStatus[] = [];
-  private startTime: number = 0;
-  
-  // Execution control
-  private executionPromise: Promise<OrchestratorResult> | null = null;
-  private resolveExecution: ((result: OrchestratorResult) => void) | null = null;
-  
-  constructor(tabManager: ITabManager, events?: Partial<OrchestratorEvents>) {
-    this.tabManager = tabManager;
-    this.events = events || {};
-  }
-  
-  // ==========================================================================
-  // LIFECYCLE METHODS
-  // ==========================================================================
-  
+  private currentConfig: TestConfig | null = null;
+  private currentTabId: number | null = null;
+  private status: ExecutionStatus = 'idle';
+  private startTime: Date | null = null;
+  private endTime: Date | null = null;
+
+  // Event listeners
+  private listeners: Map<OrchestratorEventType, Set<OrchestratorEventListener>> = new Map();
+
   /**
-   * Load project and prepare for execution
+   * Create a new TestOrchestrator
+   * 
+   * @param tabOperations - Tab management operations
+   * @param storageOperations - Optional storage operations for saving results
    */
-  async load(projectId: number): Promise<Project> {
-    this.transitionTo('loading');
-    
-    try {
-      // Request project from storage via messaging
-      const project = await this.loadProjectFromStorage(projectId);
-      
-      if (!project) {
-        throw new Error(`Project not found: ${projectId}`);
-      }
-      
-      // Validate project has required data
-      if (!project.recorded_steps || project.recorded_steps.length === 0) {
-        throw new Error('Project has no recorded steps');
-      }
-      
-      if (!project.target_url) {
-        throw new Error('Project has no target URL');
-      }
-      
-      this.project = project;
-      this.transitionTo('ready');
-      
-      this.log('info', `Loaded project: ${project.name}`);
-      this.events.onProjectLoaded?.(project);
-      
-      return project;
-      
-    } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      this.log('error', `Failed to load project: ${err.message}`);
-      this.transitionTo('error');
-      throw err;
-    }
+  constructor(
+    tabOperations: ITabOperations,
+    storageOperations?: IStorageOperations
+  ) {
+    this.tabOperations = tabOperations;
+    this.storageOperations = storageOperations ?? null;
+
+    // Initialize controllers
+    this.stopController = new StopController();
+    this.pauseController = new PauseController();
+    this.errorHandler = new ErrorHandler();
+
+    // Wire up controller events
+    this.setupControllerListeners();
   }
-  
+
+  // ==========================================================================
+  // PRIMARY EXECUTION METHOD
+  // ==========================================================================
+
   /**
    * Run test execution
+   * 
+   * @param config - Test configuration
+   * @returns Promise resolving to test run result
    */
-  async run(config: OrchestratorConfig): Promise<OrchestratorResult> {
-    // Load project if not already loaded
-    if (!this.project || this.project.id !== config.projectId) {
-      await this.load(config.projectId);
-    }
-    
-    if (this.lifecycle !== 'ready') {
-      throw new Error(`Cannot run from state: ${this.lifecycle}`);
-    }
-    
-    // Merge config with defaults
-    this.config = {
-      ...DEFAULT_ORCHESTRATOR_CONFIG,
-      ...config,
-    };
-    
-    // Initialize execution state
-    this.logs = [];
-    this.startTime = Date.now();
-    this.stepStatuses = createStepStatuses(this.project!.recorded_steps || []);
-    
-    // Create test run record
-    if (this.config.persistResults) {
-      await this.createTestRun();
-    }
-    
-    // Transition to running
-    this.transitionTo('running');
-    
-    // Create execution promise
-    this.executionPromise = new Promise((resolve) => {
-      this.resolveExecution = resolve;
+  public async run(config: TestConfig): Promise<TestRunResult> {
+    // Validate config
+    this.validateConfig(config);
+
+    // Initialize
+    this.currentConfig = config;
+    this.status = 'running';
+    this.startTime = new Date();
+    this.endTime = null;
+
+    const options = { ...DEFAULT_EXECUTION_OPTIONS, ...config.options };
+
+    // Initialize trackers
+    this.initializeTrackers(config, options);
+
+    // Start execution tracking
+    this.progressTracker!.startExecution();
+
+    // Start controllers
+    this.stopController.start();
+    this.pauseController.reset();
+
+    // Emit start event
+    this.emitEvent('started', {
+      projectId: config.projectId,
+      totalSteps: config.steps.length,
+      totalRows: config.csvData.length || 1,
     });
-    
-    // Start execution
-    this.executeTest();
-    
-    return this.executionPromise;
+
+    this.logCollector!.executionStarted(config.projectId);
+
+    try {
+      // Open tab and inject script
+      await this.setupTab(config.targetUrl);
+
+      // Build mapping lookup for O(1) access
+      const mappingLookup = this.buildMappingLookup(config.fieldMappings);
+
+      // Determine rows to process
+      const rowsToProcess = config.csvData.length > 0 
+        ? config.csvData 
+        : [{}]; // Single empty row for no-CSV mode
+
+      // Execute rows
+      for (let rowIndex = 0; rowIndex < rowsToProcess.length; rowIndex++) {
+        // Check stop/pause
+        await this.checkControllers();
+
+        const row = rowsToProcess[rowIndex];
+        await this.executeRow(config, row, rowIndex, mappingLookup, options);
+
+        // Delay between rows (except last)
+        if (rowIndex < rowsToProcess.length - 1 && options.rowDelay > 0) {
+          await this.delayWithPauseCheck(options.rowDelay);
+        }
+      }
+
+      // Mark complete
+      this.stopController.complete();
+      this.progressTracker!.completeExecution();
+      this.resultAggregator!.markEnd();
+
+    } catch (error) {
+      // Handle stop request
+      if (isStopRequestedError(error)) {
+        this.logCollector!.executionStopped(
+          this.stopController.getStopReason() ?? 'user_requested'
+        );
+        this.progressTracker!.stopExecution();
+        this.resultAggregator!.markStopped();
+      } else {
+        // Unexpected error
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        this.logCollector!.error(`Execution failed: ${errorMessage}`);
+        this.errorHandler.handle(error as Error, {});
+        this.progressTracker!.completeExecution();
+        this.resultAggregator!.markEnd();
+      }
+    } finally {
+      // Cleanup
+      await this.cleanup(options);
+    }
+
+    // Aggregate results
+    const result = this.resultAggregator!.aggregate(
+      this.progressTracker!,
+      this.logCollector!
+    );
+
+    // Build TestRun
+    let testRun: TestRun | undefined;
+    if (this.storageOperations) {
+      try {
+        const builder = TestRunBuilder.fromExecutionResult(result, config.projectId);
+        testRun = builder.build();
+        await this.storageOperations.saveTestRun(testRun);
+      } catch (saveError) {
+        this.logCollector!.error(`Failed to save test run: ${saveError}`);
+      }
+    }
+
+    // Calculate duration
+    this.endTime = new Date();
+    const duration = this.endTime.getTime() - this.startTime!.getTime();
+
+    // Update status
+    this.status = this.stopController.wasStopped() ? 'stopped' : 
+                  result.status === 'failed' ? 'failed' : 'completed';
+
+    // Emit completion event
+    this.emitEvent('completed', {
+      success: result.status === 'completed',
+      result,
+      duration,
+    });
+
+    return {
+      success: result.status === 'completed',
+      result,
+      testRun,
+      duration,
+      wasStopped: this.stopController.wasStopped(),
+      error: result.status === 'failed' ? 'Test execution had failures' : undefined,
+    };
   }
-  
+
+  // ==========================================================================
+  // CONTROL METHODS
+  // ==========================================================================
+
   /**
    * Pause execution
    */
-  pause(): void {
-    if (!this.canPause()) {
-      throw new Error(`Cannot pause from state: ${this.lifecycle}`);
-    }
-    
-    this.transitionTo('paused');
-    this.log('warning', 'Execution paused');
-    
-    if (this.session) {
-      this.session.pause();
-    }
+  public pause(): void {
+    this.pauseController.pause('user_requested', 'Paused by user');
+    this.status = 'paused';
+    this.logCollector?.warning('Execution paused by user');
+    this.emitEvent('paused', { reason: 'user_requested' });
   }
-  
+
   /**
    * Resume execution
    */
-  resume(): void {
-    if (!this.canResume()) {
-      throw new Error(`Cannot resume from state: ${this.lifecycle}`);
-    }
-    
-    this.transitionTo('running');
-    this.log('info', 'Execution resumed');
-    
-    if (this.session) {
-      this.session.resume();
-    }
+  public resume(): void {
+    this.pauseController.resume();
+    this.status = 'running';
+    this.logCollector?.info('Execution resumed');
+    this.emitEvent('resumed', {});
   }
-  
+
   /**
    * Stop execution
    */
-  stop(): void {
-    if (!this.canStop()) {
-      throw new Error(`Cannot stop from state: ${this.lifecycle}`);
-    }
-    
-    this.transitionTo('stopping');
-    this.log('warning', 'Execution stopping...');
-    
-    if (this.session) {
-      this.session.stop();
-    }
-    
-    // Finish will be called by session complete handler
+  public stop(): void {
+    this.stopController.stop('user_requested', 'Stopped by user');
+    this.status = 'stopped';
+    this.logCollector?.warning('Execution stopped by user');
+    this.emitEvent('stopped', { reason: 'user_requested' });
   }
-  
+
   /**
-   * Reset to idle state
+   * Check if currently running
    */
-  reset(): void {
-    // Stop if running
-    if (this.lifecycle === 'running' || this.lifecycle === 'paused') {
-      this.session?.stop();
+  public isRunning(): boolean {
+    return this.status === 'running' || this.status === 'paused';
+  }
+
+  /**
+   * Check if paused
+   */
+  public isPaused(): boolean {
+    return this.status === 'paused';
+  }
+
+  /**
+   * Get current status
+   */
+  public getStatus(): ExecutionStatus {
+    return this.status;
+  }
+
+  // ==========================================================================
+  // EVENT HANDLING
+  // ==========================================================================
+
+  /**
+   * Subscribe to orchestrator events
+   * 
+   * @param eventType - Event type to subscribe to
+   * @param listener - Event listener function
+   * @returns Unsubscribe function
+   */
+  public on(eventType: OrchestratorEventType, listener: OrchestratorEventListener): () => void {
+    if (!this.listeners.has(eventType)) {
+      this.listeners.set(eventType, new Set());
     }
-    
-    // Clean up
-    this.project = null;
-    this.config = null;
-    this.tab = null;
-    this.session = null;
-    this.testRunId = null;
-    this.logs = [];
-    this.stepStatuses = [];
-    this.startTime = 0;
-    this.executionPromise = null;
-    this.resolveExecution = null;
-    
-    this.transitionTo('idle');
-    this.log('info', 'Orchestrator reset');
+    this.listeners.get(eventType)!.add(listener);
+    return () => this.off(eventType, listener);
   }
-  
-  // ==========================================================================
-  // STATE ACCESSORS
-  // ==========================================================================
-  
-  getLifecycle(): OrchestratorLifecycle {
-    return this.lifecycle;
+
+  /**
+   * Unsubscribe from events
+   */
+  public off(eventType: OrchestratorEventType, listener: OrchestratorEventListener): void {
+    this.listeners.get(eventType)?.delete(listener);
   }
-  
-  getProgress(): OrchestratorProgress {
-    const sessionProgress = this.session?.getProgress();
-    const elapsedTime = this.startTime > 0 ? Date.now() - this.startTime : 0;
-    
-    if (!sessionProgress) {
+
+  /**
+   * Emit an event to all listeners
+   */
+  private emitEvent(type: OrchestratorEventType, data: Record<string, unknown>): void {
+    const event: OrchestratorEvent = {
+      type,
+      data,
+      timestamp: new Date(),
+    };
+
+    // Emit to specific type listeners
+    this.listeners.get(type)?.forEach(listener => {
+      try {
+        listener(event);
+      } catch (error) {
+        console.error(`[TestOrchestrator] Error in event listener:`, error);
+      }
+    });
+
+    // Emit to 'all' listeners
+    this.listeners.get('all')?.forEach(listener => {
+      try {
+        listener(event);
+      } catch (error) {
+        console.error(`[TestOrchestrator] Error in event listener:`, error);
+      }
+    });
+  }
+
+  // ==========================================================================
+  // ROW EXECUTION
+  // ==========================================================================
+
+  /**
+   * Execute a single row
+   */
+  private async executeRow(
+    config: TestConfig,
+    row: Record<string, string>,
+    rowIndex: number,
+    mappingLookup: Record<string, string>,
+    options: Required<ExecutionOptions>
+  ): Promise<RowExecutionResult> {
+    const startTime = Date.now();
+    let passedSteps = 0;
+    let failedSteps = 0;
+    let skippedSteps = 0;
+
+    // Start row tracking
+    this.progressTracker!.startRow(rowIndex, Object.keys(row).join(','));
+    this.logCollector!.rowStarted(rowIndex, config.csvData.length || 1);
+
+    // Emit row started event
+    this.emitEvent('row_started', { rowIndex, totalRows: config.csvData.length || 1 });
+
+    // Execute each step
+    for (let stepIndex = 0; stepIndex < config.steps.length; stepIndex++) {
+      // Check stop/pause
+      await this.checkControllers();
+
+      const step = config.steps[stepIndex];
+      const stepResult = await this.executeStep(step, stepIndex, row, rowIndex, mappingLookup, options);
+
+      if (stepResult.success) {
+        passedSteps++;
+      } else if (stepResult.error === 'skipped') {
+        skippedSteps++;
+      } else {
+        failedSteps++;
+      }
+
+      // Delay between steps (except last)
+      if (stepIndex < config.steps.length - 1 && options.stepDelay > 0) {
+        await this.delayWithPauseCheck(options.stepDelay);
+      }
+    }
+
+    // Complete row tracking
+    this.progressTracker!.completeRow(rowIndex);
+    this.logCollector!.rowCompleted(rowIndex, passedSteps, failedSteps, skippedSteps);
+
+    // Emit row completed event
+    this.emitEvent('row_completed', {
+      rowIndex,
+      passedSteps,
+      failedSteps,
+      skippedSteps,
+    });
+
+    return {
+      success: failedSteps === 0,
+      rowIndex,
+      passedSteps,
+      failedSteps,
+      skippedSteps,
+      duration: Date.now() - startTime,
+    };
+  }
+
+  // ==========================================================================
+  // STEP EXECUTION
+  // ==========================================================================
+
+  /**
+   * Execute a single step
+   */
+  private async executeStep(
+    step: ExecutionStep,
+    stepIndex: number,
+    row: Record<string, string>,
+    rowIndex: number,
+    mappingLookup: Record<string, string>,
+    options: Required<ExecutionOptions>
+  ): Promise<StepExecutionResult> {
+    const startTime = Date.now();
+
+    // Start step tracking
+    this.progressTracker!.startStep(stepIndex, { id: stepIndex, name: step.label });
+    this.logCollector!.log('info', `[Step ${stepIndex}] Started: ${step.label}`);
+
+    // Emit step started event
+    this.emitEvent('step_started', { stepIndex, stepLabel: step.label, rowIndex });
+
+    // Inject value from CSV if applicable
+    const stepWithValue = this.injectValue(step, row, mappingLookup);
+
+    // Check if step should be skipped (input with no value)
+    if (step.event === 'input' && !stepWithValue.value && Object.keys(row).length > 0) {
+      this.progressTracker!.completeStep(stepIndex, 'skipped', 0, 'No CSV value available');
+      this.logCollector!.log('info', `[Step ${stepIndex}] Skipped: No CSV value for input step`);
+      
+      this.emitEvent('step_completed', {
+        stepIndex,
+        success: false,
+        skipped: true,
+        duration: Date.now() - startTime,
+      });
+
       return {
-        lifecycle: this.lifecycle,
-        currentRow: 0,
-        totalRows: 0,
-        currentStep: 0,
-        totalSteps: this.project?.recorded_steps?.length || 0,
-        rowPercentage: 0,
-        overallPercentage: 0,
-        passedRows: 0,
-        failedRows: 0,
-        skippedRows: 0,
-        elapsedTime,
-        estimatedRemaining: null,
+        success: false,
+        stepIndex,
+        duration: Date.now() - startTime,
+        error: 'skipped',
       };
     }
-    
-    // Estimate remaining time based on progress
-    const estimatedRemaining = sessionProgress.overallPercentage > 0
-      ? (elapsedTime / sessionProgress.overallPercentage) * (100 - sessionProgress.overallPercentage)
-      : null;
-    
-    return {
-      lifecycle: this.lifecycle,
-      currentRow: sessionProgress.currentRow,
-      totalRows: sessionProgress.totalRows,
-      currentStep: sessionProgress.currentStep,
-      totalSteps: sessionProgress.stepsPerRow,
-      rowPercentage: sessionProgress.rowPercentage,
-      overallPercentage: sessionProgress.overallPercentage,
-      passedRows: sessionProgress.passedRows,
-      failedRows: sessionProgress.failedRows,
-      skippedRows: 0, // TODO: track from session
-      elapsedTime,
-      estimatedRemaining,
-    };
-  }
-  
-  getLogs(): LogEntry[] {
-    return [...this.logs];
-  }
-  
-  getStepStatuses(): StepStatus[] {
-    return [...this.stepStatuses];
-  }
-  
-  getProject(): Project | null {
-    return this.project;
-  }
-  
-  getTab(): TabInfo | null {
-    return this.tab;
-  }
-  
-  canStart(): boolean {
-    return this.lifecycle === 'ready';
-  }
-  
-  canPause(): boolean {
-    return this.lifecycle === 'running';
-  }
-  
-  canResume(): boolean {
-    return this.lifecycle === 'paused';
-  }
-  
-  canStop(): boolean {
-    return this.lifecycle === 'running' || this.lifecycle === 'paused';
-  }
-  
-  // ==========================================================================
-  // EVENT REGISTRATION
-  // ==========================================================================
-  
-  onProjectLoaded(callback: ProjectLoadedCallback): void {
-    this.events.onProjectLoaded = callback;
-  }
-  
-  onTabOpened(callback: TabOpenedCallback): void {
-    this.events.onTabOpened = callback;
-  }
-  
-  onRowStart(callback: RowStartCallback): void {
-    this.events.onRowStart = callback;
-  }
-  
-  onRowComplete(callback: RowCompleteCallback): void {
-    this.events.onRowComplete = callback;
-  }
-  
-  onStepStart(callback: StepStartCallback): void {
-    this.events.onStepStart = callback;
-  }
-  
-  onStepComplete(callback: StepCompleteCallback): void {
-    this.events.onStepComplete = callback;
-  }
-  
-  onProgress(callback: ProgressCallback): void {
-    this.events.onProgress = callback;
-  }
-  
-  onLog(callback: LogCallback): void {
-    this.events.onLog = callback;
-  }
-  
-  onComplete(callback: CompleteCallback): void {
-    this.events.onComplete = callback;
-  }
-  
-  onError(callback: ErrorCallback): void {
-    this.events.onError = callback;
-  }
-  
-  onLifecycleChange(callback: LifecycleCallback): void {
-    this.events.onLifecycleChange = callback;
-  }
-  
-  // ==========================================================================
-  // LOGGING
-  // ==========================================================================
-  
-  log(level: LogLevel, message: string, data?: Record<string, unknown>): void {
-    const entry: LogEntry = {
-      timestamp: formatTimestamp(),
-      level,
-      message,
-      data,
-    };
-    
-    this.logs.push(entry);
-    this.events.onLog?.(entry);
-  }
-  
-  // ==========================================================================
-  // PRIVATE: STATE MANAGEMENT
-  // ==========================================================================
-  
-  private transitionTo(newState: OrchestratorLifecycle): void {
-    const previousState = this.lifecycle;
-    
-    if (previousState !== newState && !isValidTransition(previousState, newState)) {
-      throw new Error(`Invalid transition: ${previousState} → ${newState}`);
-    }
-    
-    this.lifecycle = newState;
-    
-    if (previousState !== newState) {
-      this.events.onLifecycleChange?.(newState, previousState);
-    }
-  }
-  
-  // ==========================================================================
-  // PRIVATE: STORAGE OPERATIONS
-  // ==========================================================================
-  
-  private async loadProjectFromStorage(projectId: number): Promise<Project | null> {
-    // This would typically use chrome.runtime.sendMessage
-    // For now, we'll define the interface and let the implementation
-    // be provided by the actual runtime environment
+
     try {
-      if (typeof chrome !== 'undefined' && chrome.runtime?.sendMessage) {
-        const response = await chrome.runtime.sendMessage({
-          action: 'get_project_by_id',
-          id: projectId,
-        });
-        return response?.project || null;
+      // Execute step via tab operations
+      if (!this.currentTabId) {
+        throw new Error('No active tab');
       }
-      
-      // Fallback for testing
-      return null;
-    } catch (error) {
-      this.log('error', `Storage error: ${error}`);
-      return null;
-    }
-  }
-  
-  private async createTestRun(): Promise<void> {
-    if (!this.project || !this.config) return;
-    
-    try {
-      if (typeof chrome !== 'undefined' && chrome.runtime?.sendMessage) {
-        const response = await chrome.runtime.sendMessage({
-          action: 'createTestRun',
-          testRun: {
-            project_id: this.project.id!,
-            status: 'running' as TestRunStatus,
-            start_time: new Date().toISOString(),
-            total_steps: this.project.recorded_steps?.length || 0,
-            passed_steps: 0,
-            failed_steps: 0,
-            test_results: [],
-            logs: '',
-          },
-        });
+
+      const success = await this.tabOperations.sendStepCommand(
+        this.currentTabId,
+        stepWithValue
+      );
+
+      const duration = Date.now() - startTime;
+
+      if (success) {
+        this.progressTracker!.completeStep(stepIndex, 'passed', duration);
+        this.logCollector!.log('info', `[Step ${stepIndex}] Passed (${duration}ms)`);
         
-        this.testRunId = response?.id || null;
-        this.log('info', `Created test run: ${this.testRunId}`);
-      }
-    } catch (error) {
-      this.log('warning', `Failed to create test run: ${error}`);
-    }
-  }
-  
-  private async updateTestRun(
-    status: TestRunStatus,
-    passedSteps: number,
-    failedSteps: number,
-    results: StepExecutionResult[]
-  ): Promise<void> {
-    if (!this.testRunId) return;
-    
-    try {
-      if (typeof chrome !== 'undefined' && chrome.runtime?.sendMessage) {
-        await chrome.runtime.sendMessage({
-          action: 'updateTestRun',
-          id: this.testRunId,
-          updates: {
-            status,
-            end_time: new Date().toISOString(),
-            passed_steps: passedSteps,
-            failed_steps: failedSteps,
-            test_results: results,
-            logs: this.logs.map(l => `[${l.timestamp}] ${l.level}: ${l.message}`).join('\n'),
-          },
+        this.emitEvent('step_completed', {
+          stepIndex,
+          success: true,
+          duration,
         });
-      }
-    } catch (error) {
-      this.log('warning', `Failed to update test run: ${error}`);
-    }
-  }
-  
-  // ==========================================================================
-  // PRIVATE: TAB MANAGEMENT
-  // ==========================================================================
-  
-  private async openTab(): Promise<TabInfo | null> {
-    if (!this.project || !this.config) return null;
-    
-    // Check if reusing existing tab
-    if (this.config.reuseTab && this.config.existingTabId) {
-      const tabInfo = await this.tabManager.getTabInfo(this.config.existingTabId);
-      if (tabInfo) {
-        this.log('info', `Reusing existing tab: ${tabInfo.tabId}`);
-        return tabInfo;
-      }
-    }
-    
-    // Open new tab
-    this.log('info', `Opening tab: ${this.project.target_url}`);
-    
-    const result = await this.tabManager.openTab(this.project.target_url);
-    
-    if (!result.success || !result.tab) {
-      this.log('error', `Failed to open tab: ${result.error}`);
-      return null;
-    }
-    
-    this.log('success', `Tab opened: ${result.tab.tabId}`);
-    return result.tab;
-  }
-  
-  private async closeTab(): Promise<void> {
-    if (!this.tab) return;
-    
-    if (this.config?.closeTabOnComplete) {
-      this.log('info', `Closing tab: ${this.tab.tabId}`);
-      await this.tabManager.closeTab(this.tab.tabId);
-      this.tab = null;
-    }
-  }
-  
-  // ==========================================================================
-  // PRIVATE: EXECUTION
-  // ==========================================================================
-  
-  private async executeTest(): Promise<void> {
-    if (!this.project || !this.config) {
-      this.finishExecution('error', 'No project or config');
-      return;
-    }
-    
-    try {
-      // Open tab
-      this.tab = await this.openTab();
-      
-      if (!this.tab) {
-        this.finishExecution('error', 'Failed to open tab');
-        return;
-      }
-      
-      this.events.onTabOpened?.(this.tab);
-      
-      // Wait for script injection
-      const isReady = await this.tabManager.isTabReady(this.tab.tabId);
-      if (!isReady) {
-        this.log('warning', 'Tab not ready, attempting to inject script');
-        const injected = await this.tabManager.injectScript(this.tab.tabId);
-        if (!injected) {
-          this.finishExecution('error', 'Failed to inject content script');
-          return;
+
+        return { success: true, stepIndex, duration };
+      } else {
+        const error = 'Step execution returned false';
+        this.progressTracker!.completeStep(stepIndex, 'failed', duration, error);
+        this.logCollector!.log('error', `[Step ${stepIndex}] Failed: ${error} (${duration}ms)`);
+
+        const errorResult = this.errorHandler.handle(new Error(error), {
+          step,
+          row,
+          retryAttempt: 0,
+          maxRetries: 0,
+        });
+
+        this.emitEvent('step_completed', {
+          stepIndex,
+          success: false,
+          error,
+          duration,
+        });
+
+        if (!options.continueOnError && errorResult.shouldAbort) {
+          throw new Error(error);
         }
+
+        return { success: false, stepIndex, duration, error };
       }
-      
-      // Build field mappings
-      const fieldMappings = buildFieldMappings(this.project.parsed_fields || []);
-      
-      // Get CSV data
-      const csvData = this.config.rowIndices && this.config.rowIndices.length > 0
-        ? this.config.rowIndices.map(i => (this.project!.csv_data || [])[i] || {})
-        : this.project.csv_data || [];
-      
-      // Create replay session
-      this.session = createReplaySession({
-        steps: this.project.recorded_steps || [],
-        csvData: csvData.length > 0 ? csvData : undefined,
-        fieldMappings,
-        context: {
-          tabId: this.tab.tabId,
-          pageUrl: this.project.target_url,
-        },
-        engineConfig: {
-          execution: {
-            findTimeout: this.config.stepTimeout,
-          },
-          continueOnFailure: this.config.continueOnRowFailure,
-          maxConsecutiveFailures: this.config.maxRowFailures,
-          stepDelay: this.config.stepDelay,
-          humanDelay: this.config.humanDelay,
-        },
-        continueOnRowFailure: this.config.continueOnRowFailure,
-        maxRowFailures: this.config.maxRowFailures,
-        rowDelay: this.config.rowDelay,
-      });
-      
-      // Wire up session events
-      this.wireSessionEvents();
-      
-      // Start session
-      this.log('info', `Starting test with ${this.project.recorded_steps?.length || 0} steps`);
-      const summary = await this.session.start();
-      
-      // Handle completion
-      this.handleSessionComplete(summary);
-      
     } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      this.log('error', `Execution error: ${err.message}`);
-      this.events.onError?.(err, 'executeTest');
-      this.finishExecution('error', err.message);
+      const duration = Date.now() - startTime;
+      const errorMessage = error instanceof Error ? error.message : String(error);
+
+      this.progressTracker!.completeStep(stepIndex, 'failed', duration, errorMessage);
+      this.logCollector!.log('error', `[Step ${stepIndex}] Failed: ${errorMessage} (${duration}ms)`);
+
+      const errorResult = this.errorHandler.handle(error as Error, {
+        step,
+        row,
+        retryAttempt: 0,
+        maxRetries: 0,
+      });
+
+      this.emitEvent('step_completed', {
+        stepIndex,
+        success: false,
+        error: errorMessage,
+        duration,
+      });
+
+      if (!options.continueOnError && errorResult.shouldAbort) {
+        throw error;
+      }
+
+      return { success: false, stepIndex, duration, error: errorMessage };
     }
   }
-  
-  private wireSessionEvents(): void {
-    if (!this.session) return;
-    
-    this.session.onRowStart((rowIndex, rowData) => {
-      const rowNum = rowIndex + 1;
-      const totalRows = this.session?.getProgress().totalRows || 1;
-      
-      if (totalRows > 1) {
-        this.log('info', `Starting row ${rowNum} of ${totalRows}`);
-      } else {
-        this.log('info', 'Starting test execution');
-      }
-      
-      // Reset step statuses for new row
-      if (this.project) {
-        this.stepStatuses = createStepStatuses(this.project.recorded_steps || []);
-      }
-      
-      this.events.onRowStart?.(rowIndex, rowData);
-    });
-    
-    this.session.onRowComplete((result) => {
-      const rowNum = result.rowIndex + 1;
-      
-      if (result.skipped) {
-        this.log('warning', `Row ${rowNum} skipped: ${result.skipReason}`);
-      } else if (result.success) {
-        this.log('success', `Row ${rowNum} completed: ${result.passed} passed`);
-      } else {
-        this.log('error', `Row ${rowNum} failed: ${result.failed} failed`);
-      }
-      
-      this.events.onRowComplete?.(result);
-    });
-    
-    this.session.onProgress(() => {
-      // Update overall progress
-      const orchestratorProgress = this.getProgress();
-      this.events.onProgress?.(orchestratorProgress);
-    });
-    
-    this.session.onError((error, rowIndex) => {
-      this.log('error', `Error at row ${(rowIndex || 0) + 1}: ${error.message}`);
-      this.events.onError?.(error, `row-${rowIndex}`);
-    });
-  }
-  
-  private handleSessionComplete(summary: SessionSummary): void {
-    // Calculate totals
-    const passedSteps = summary.passedSteps;
-    const failedSteps = summary.failedSteps;
-    const allResults = summary.rowResults.flatMap(r => r.stepResults);
-    
-    // Determine final status - use casting as TestRunStatus enum may vary
-    const status = (summary.success ? 'completed' : 'failed') as TestRunStatus;
-    
-    // Log summary
-    this.log(
-      summary.success ? 'success' : 'error',
-      `Test ${status}: ${summary.passedRows}/${summary.totalRows} rows passed, ` +
-      `${passedSteps}/${summary.totalSteps} steps passed`
+
+  // ==========================================================================
+  // VALUE INJECTION
+  // ==========================================================================
+
+  /**
+   * Inject CSV value into step
+   */
+  private injectValue(
+    step: ExecutionStep,
+    row: Record<string, string>,
+    mappingLookup: Record<string, string>
+  ): ExecutionStep {
+    if (step.event !== 'input' && step.event !== 'click') {
+      return step;
+    }
+
+    // Direct match: CSV column matches step label
+    if (row[step.label] !== undefined) {
+      return { ...step, value: row[step.label] };
+    }
+
+    // Mapped match: CSV column mapped to step label
+    const mappedKey = Object.keys(mappingLookup).find(
+      key => mappingLookup[key] === step.label
     );
+    if (mappedKey && row[mappedKey] !== undefined) {
+      return { ...step, value: row[mappedKey] };
+    }
+
+    // No match - return original step
+    return step;
+  }
+
+  /**
+   * Build mapping lookup object for O(1) access
+   */
+  private buildMappingLookup(mappings: FieldMapping[]): Record<string, string> {
+    const lookup: Record<string, string> = {};
     
-    // Update test run
-    if (this.config?.persistResults) {
-      this.updateTestRun(status, passedSteps, failedSteps, allResults);
+    for (const mapping of mappings) {
+      if (mapping.mapped && mapping.fieldName && mapping.inputVarFields) {
+        lookup[mapping.fieldName] = mapping.inputVarFields;
+      }
     }
     
-    // Determine final state
-    if (this.lifecycle === 'stopping') {
-      this.finishExecution('stopped', 'User stopped');
-    } else if (summary.success) {
-      this.finishExecution('completed');
-    } else {
-      this.finishExecution('completed'); // Still completed, just with failures
+    return lookup;
+  }
+
+  // ==========================================================================
+  // TAB MANAGEMENT
+  // ==========================================================================
+
+  /**
+   * Setup tab for execution
+   */
+  private async setupTab(url: string): Promise<void> {
+    this.logCollector!.info(`Opening tab: ${url}`);
+
+    // Open tab
+    const openResult = await this.tabOperations.openTab(url);
+    if (!openResult.success || !openResult.tabId) {
+      throw new Error(`Failed to open tab: ${openResult.error || 'Unknown error'}`);
+    }
+
+    this.currentTabId = openResult.tabId;
+    this.logCollector!.info(`Tab opened: ${this.currentTabId}`);
+
+    // Inject script
+    const injectResult = await this.tabOperations.injectScript(this.currentTabId);
+    if (!injectResult.success) {
+      throw new Error(`Failed to inject script: ${injectResult.error || 'Unknown error'}`);
+    }
+
+    this.logCollector!.info('Content script injected');
+  }
+
+  /**
+   * Cleanup after execution
+   */
+  private async cleanup(options: Required<ExecutionOptions>): Promise<void> {
+    // Close tab if configured
+    if (options.closeTabAfterCompletion && this.currentTabId) {
+      try {
+        await this.tabOperations.closeTab(this.currentTabId);
+        this.logCollector!.info('Tab closed');
+      } catch (error) {
+        this.logCollector!.warning(`Failed to close tab: ${error}`);
+      }
+    }
+
+    this.currentTabId = null;
+  }
+
+  // ==========================================================================
+  // CONTROL HELPERS
+  // ==========================================================================
+
+  /**
+   * Check stop and pause controllers
+   */
+  private async checkControllers(): Promise<void> {
+    // Check stop first
+    this.stopController.checkpoint();
+
+    // Wait if paused
+    await this.pauseController.waitIfPaused();
+
+    // Check stop again after resume
+    this.stopController.checkpoint();
+  }
+
+  /**
+   * Delay with pause checking
+   */
+  private async delayWithPauseCheck(ms: number): Promise<void> {
+    const checkInterval = 100;
+    let elapsed = 0;
+
+    while (elapsed < ms) {
+      // Check stop
+      if (this.stopController.shouldStop()) {
+        this.stopController.checkpoint();
+      }
+
+      // Wait if paused (doesn't count toward delay)
+      await this.pauseController.waitIfPaused();
+
+      // Sleep
+      const sleepTime = Math.min(checkInterval, ms - elapsed);
+      await new Promise(resolve => setTimeout(resolve, sleepTime));
+      elapsed += sleepTime;
     }
   }
-  
-  private async finishExecution(
-    finalState: 'completed' | 'stopped' | 'error',
-    error?: string
-  ): Promise<void> {
-    // Close tab if configured
-    await this.closeTab();
-    
-    // Transition to final state
-    if (finalState === 'stopped') {
-      this.transitionTo('stopped');
-    } else if (finalState === 'error') {
-      this.transitionTo('error');
-    } else {
-      this.transitionTo('completed');
+
+  /**
+   * Setup controller event listeners
+   */
+  private setupControllerListeners(): void {
+    // Stop controller events
+    this.stopController.onStop((event) => {
+      this.emitEvent('stopped', { reason: event.reason, message: event.message });
+    });
+
+    // Pause controller events
+    this.pauseController.onPause((event) => {
+      if (event.type === 'paused') {
+        this.emitEvent('paused', { reason: event.reason });
+      } else if (event.type === 'resumed') {
+        this.emitEvent('resumed', {});
+      }
+    });
+  }
+
+  // ==========================================================================
+  // INITIALIZATION
+  // ==========================================================================
+
+  /**
+   * Validate configuration
+   */
+  private validateConfig(config: TestConfig): void {
+    if (!config.projectId) {
+      throw new Error('Project ID is required');
     }
-    
-    // Build result
-    const summary = this.session?.getRowResults() || [];
-    const sessionSummary: SessionSummary = {
-      totalRows: summary.length,
-      passedRows: summary.filter(r => r.success && !r.skipped).length,
-      failedRows: summary.filter(r => !r.success && !r.skipped).length,
-      skippedRows: summary.filter(r => r.skipped).length,
-      totalSteps: summary.length * (this.project?.recorded_steps?.length || 0),
-      passedSteps: summary.reduce((sum, r) => sum + r.passed, 0),
-      failedSteps: summary.reduce((sum, r) => sum + r.failed, 0),
-      skippedStepsCount: summary.reduce((sum, r) => sum + r.skippedSteps, 0),
-      duration: Date.now() - this.startTime,
-      success: finalState === 'completed' && summary.every(r => r.success || r.skipped),
-      rowResults: summary,
+    if (!config.targetUrl) {
+      throw new Error('Target URL is required');
+    }
+    if (!config.steps || config.steps.length === 0) {
+      throw new Error('At least one step is required');
+    }
+  }
+
+  /**
+   * Initialize trackers for execution
+   */
+  private initializeTrackers(config: TestConfig, options: Required<ExecutionOptions>): void {
+    const totalRows = config.csvData.length || 1;
+
+    // Progress tracker
+    this.progressTracker = new ProgressTracker(
+      totalRows,
+      config.steps.length
+    );
+
+    // Log collector
+    this.logCollector = new LogCollector({
+      includeDebug: options.includeDebugLogs,
+    });
+
+    // Result aggregator
+    this.resultAggregator = new ResultAggregator();
+    this.resultAggregator.markStart();
+
+    // Error handler reset
+    this.errorHandler.reset();
+
+    // Wire up progress events
+    this.progressTracker.on('progress_update', (event) => {
+      this.emitEvent('progress', {
+        percentage: event.snapshot.percentage,
+        currentStep: event.snapshot.currentStepIndex,
+        currentRow: event.snapshot.currentRowIndex,
+        passedSteps: event.snapshot.passedSteps,
+        failedSteps: event.snapshot.failedSteps,
+      });
+    });
+  }
+
+  // ==========================================================================
+  // STATE QUERIES
+  // ==========================================================================
+
+  /**
+   * Get current progress
+   */
+  public getProgress(): number {
+    return this.progressTracker?.getSnapshot().percentage ?? 0;
+  }
+
+  /**
+   * Get logs as string
+   */
+  public getLogs(): string {
+    return this.logCollector?.toString() ?? '';
+  }
+
+  /**
+   * Get error count
+   */
+  public getErrorCount(): number {
+    return this.errorHandler.getErrorCount();
+  }
+
+  /**
+   * Get current state snapshot
+   */
+  public getState(): OrchestratorState {
+    return {
+      status: this.status,
+      progress: this.progressTracker?.getSnapshot() ?? {
+        percentage: 0,
+        currentStep: 0,
+        currentRow: 0,
+        totalSteps: 0,
+        totalRows: 0,
+        passedSteps: 0,
+        failedSteps: 0,
+        skippedSteps: 0,
+      },
+      currentTabId: this.currentTabId,
       startTime: this.startTime,
-      endTime: Date.now(),
+      endTime: this.endTime,
+      errorCount: this.errorHandler.getErrorCount(),
+      isPaused: this.pauseController.isPaused(),
     };
-    
-    const result: OrchestratorResult = {
-      success: finalState === 'completed' && sessionSummary.success,
-      finalState: this.lifecycle,
-      project: this.project!,
-      summary: sessionSummary,
-      logs: this.logs,
-      tab: this.tab || undefined,
-      error,
-    };
-    
-    // Emit complete
-    this.events.onComplete?.(result);
-    
-    // Resolve promise
-    if (this.resolveExecution) {
-      this.resolveExecution(result);
-      this.resolveExecution = null;
-    }
   }
 }
 
 // ============================================================================
-// FACTORY FUNCTIONS
+// FACTORY FUNCTION
 // ============================================================================
 
 /**
- * Create a TestOrchestrator
+ * Create a TestOrchestrator instance
  */
 export function createTestOrchestrator(
-  tabManager: ITabManager,
-  events?: Partial<OrchestratorEvents>
+  tabOperations: ITabOperations,
+  storageOperations?: IStorageOperations
 ): TestOrchestrator {
-  return new TestOrchestrator(tabManager, events);
-}
-
-// ============================================================================
-// MOCK TAB MANAGER (for testing)
-// ============================================================================
-
-/**
- * Create a mock tab manager for testing
- */
-export function createMockTabManager(options: {
-  openSuccess?: boolean;
-  tabId?: number;
-  scriptInjected?: boolean;
-} = {}): ITabManager {
-  const {
-    openSuccess = true,
-    tabId = 123,
-    scriptInjected = true,
-  } = options;
-  
-  const mockTab: TabInfo = {
-    tabId,
-    url: 'https://example.com',
-    scriptInjected,
-    createdAt: Date.now(),
-  };
-  
-  return {
-    async openTab(url: string) {
-      if (openSuccess) {
-        return { success: true, tab: { ...mockTab, url } };
-      }
-      return { success: false, error: 'Failed to open tab' };
-    },
-    
-    async closeTab(_tabId: number) {
-      return true;
-    },
-    
-    async injectScript(_tabId: number) {
-      return scriptInjected;
-    },
-    
-    async isTabReady(_tabId: number) {
-      return scriptInjected;
-    },
-    
-    async getTabInfo(_tabId: number) {
-      return mockTab;
-    },
-    
-    async sendMessage<T>(_tabId: number, _message: unknown): Promise<T> {
-      return true as unknown as T;
-    },
-  };
+  return new TestOrchestrator(tabOperations, storageOperations);
 }
