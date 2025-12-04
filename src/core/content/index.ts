@@ -15,6 +15,9 @@
  *   // Iframe coordination
  *   createIframeManager,
  *   
+ *   // Shadow DOM
+ *   createShadowDOMHandler,
+ *   
  *   // Cross-context messaging
  *   createContextBridge,
  *   
@@ -24,23 +27,15 @@
  *   // Types
  *   type RecordedEvent,
  *   type IframeInfo,
+ *   type ShadowHostInfo,
  * } from '@/core/content';
- * 
- * // Start recording
- * const recorder = createEventRecorder();
- * recorder.onEvent((event) => console.log('Captured:', event));
- * recorder.start();
- * 
- * // Manage iframes
- * const iframeManager = createIframeManager();
- * iframeManager.start();
- * iframeManager.attachToAllIframes();
  * ```
  * 
  * ## Module Structure
  * - **IContentScript**: Type definitions and interfaces
  * - **EventRecorder**: User interaction capture
  * - **IframeManager**: Iframe coordination
+ * - **ShadowDOMHandler**: Shadow DOM traversal
  * - **ContextBridge**: Cross-context messaging
  * - **NotificationUI**: Overlay notifications
  */
@@ -181,6 +176,38 @@ export {
 } from './IframeManager';
 
 // ============================================================================
+// SHADOW DOM HANDLER
+// ============================================================================
+
+export {
+  // Types
+  type ShadowHostInfo,
+  type ShadowDOMHandlerConfig,
+  
+  // Constants
+  DEFAULT_SHADOW_HANDLER_CONFIG,
+  
+  // Class
+  ShadowDOMHandler,
+  
+  // Factory functions
+  createShadowDOMHandler,
+  createDebugShadowHandler,
+  
+  // Singleton
+  getShadowDOMHandler,
+  resetShadowDOMHandler,
+  
+  // Helper functions
+  hasShadowRoot,
+  getShadowRoot,
+  getShadowRootMode,
+  createShadowHostInfo,
+  generateLocalXPath,
+  findAllShadowHosts,
+} from './ShadowDOMHandler';
+
+// ============================================================================
 // CONTEXT BRIDGE
 // ============================================================================
 
@@ -276,6 +303,12 @@ export const CONTENT_DEFAULTS = {
   
   /** Default max iframe depth */
   MAX_IFRAME_DEPTH: 10,
+  
+  /** Default max shadow DOM depth */
+  MAX_SHADOW_DEPTH: 10,
+  
+  /** Property name for intercepted shadow roots */
+  INTERCEPTED_SHADOW_PROPERTY: '__realShadowRoot',
 } as const;
 
 /**
@@ -450,6 +483,7 @@ export function createElementNotFoundError(
 export function resetAllContentSingletons(): void {
   resetEventRecorder();
   resetIframeManager();
+  resetShadowDOMHandler();
   resetContextBridge();
   resetNotificationUI();
 }
@@ -467,6 +501,7 @@ import type {
 
 import { resetEventRecorder } from './EventRecorder';
 import { resetIframeManager } from './IframeManager';
+import { resetShadowDOMHandler } from './ShadowDOMHandler';
 import { resetContextBridge } from './ContextBridge';
 import { resetNotificationUI } from './NotificationUI';
 
