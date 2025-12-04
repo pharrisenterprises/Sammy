@@ -575,6 +575,9 @@ export function useOrchestrator(options: UseOrchestratorOptions): UseOrchestrato
       updateStepStatus(stepIndex, 'passed', 0);
       setPassedSteps(prev => prev + 1);
       addLog('success', `✓ Step ${stepIndex + 1}: Open (auto-pass)`, stepIndex, rowIndex);
+      
+      // Call callback
+      callbacksRef.current.onStepComplete?.(result);
       return result;
     }
 
@@ -591,6 +594,9 @@ export function useOrchestrator(options: UseOrchestratorOptions): UseOrchestrato
       updateStepStatus(stepIndex, 'failed', result.duration, result.errorMessage);
       setFailedSteps(prev => prev + 1);
       addLog('error', `✗ Step ${stepIndex + 1}: Tab not available`, stepIndex, rowIndex);
+      
+      // Call callback
+      callbacksRef.current.onStepComplete?.(result);
       return result;
     }
 
