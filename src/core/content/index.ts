@@ -1,31 +1,46 @@
 /**
- * Content Script Module - Barrel Export
+ * Content Module - Barrel Export
  * @module core/content
  * @version 1.0.0
  * 
- * Provides content script infrastructure for dual-mode operation
- * (recording/replay), cross-context messaging, and notification UI.
+ * Provides content script infrastructure for page automation including
+ * recording, replay, cross-context messaging, and notifications.
  * 
  * ## Quick Start
  * ```typescript
  * import { 
+ *   // Recording
+ *   createEventRecorder,
+ *   
+ *   // Iframe coordination
+ *   createIframeManager,
+ *   
+ *   // Cross-context messaging
  *   createContextBridge,
+ *   
+ *   // Notifications
  *   createNotificationUI,
- *   type ContentScriptMode,
+ *   
+ *   // Types
  *   type RecordedEvent,
+ *   type IframeInfo,
  * } from '@/core/content';
  * 
- * // Initialize context bridge
- * const bridge = createContextBridge();
- * bridge.initialize();
+ * // Start recording
+ * const recorder = createEventRecorder();
+ * recorder.onEvent((event) => console.log('Captured:', event));
+ * recorder.start();
  * 
- * // Show notification
- * const notification = createNotificationUI();
- * notification.showLoading('Executing step 1 of 5...', 20);
+ * // Manage iframes
+ * const iframeManager = createIframeManager();
+ * iframeManager.start();
+ * iframeManager.attachToAllIframes();
  * ```
  * 
  * ## Module Structure
- * - **IContentScript**: Interface contracts
+ * - **IContentScript**: Type definitions and interfaces
+ * - **EventRecorder**: User interaction capture
+ * - **IframeManager**: Iframe coordination
  * - **ContextBridge**: Cross-context messaging
  * - **NotificationUI**: Overlay notifications
  */
@@ -104,6 +119,68 @@ export {
 } from './IContentScript';
 
 // ============================================================================
+// EVENT RECORDER
+// ============================================================================
+
+export {
+  // Types
+  type EventRecorderConfig,
+  
+  // Constants
+  DEFAULT_RECORDER_CONFIG,
+  
+  // Class
+  EventRecorder,
+  
+  // Factory functions
+  createEventRecorder,
+  createDebugRecorder,
+  createFullRecorder,
+  
+  // Singleton
+  getEventRecorder,
+  resetEventRecorder,
+  
+  // Helper functions
+  generateXPath,
+  getElementLabel,
+  getElementValue,
+  buildLocatorBundle,
+  getEventTarget,
+  determineEventType,
+} from './EventRecorder';
+
+// ============================================================================
+// IFRAME MANAGER
+// ============================================================================
+
+export {
+  // Types
+  type IframeManagerConfig,
+  
+  // Constants
+  DEFAULT_IFRAME_MANAGER_CONFIG,
+  
+  // Class
+  IframeManager,
+  
+  // Factory functions
+  createIframeManager,
+  createDebugIframeManager,
+  createManualIframeManager,
+  
+  // Singleton
+  getIframeManager,
+  resetIframeManager,
+  
+  // Helper functions
+  isCrossOriginIframe,
+  getIframeDocument,
+  createIframeInfo,
+  findIframesInDocument,
+} from './IframeManager';
+
+// ============================================================================
 // CONTEXT BRIDGE
 // ============================================================================
 
@@ -179,7 +256,7 @@ export const CONTENT_DEFAULTS = {
   /** Default step execution timeout in ms */
   STEP_TIMEOUT: 30000,
   
-  /** Default notification display duration in ms */
+  /** Default notification duration in ms */
   NOTIFICATION_DURATION: 3000,
   
   /** Default animation duration in ms */
@@ -188,42 +265,48 @@ export const CONTENT_DEFAULTS = {
   /** Default notification position */
   NOTIFICATION_POSITION: 'top-right' as const,
   
-  /** Default z-index for overlays */
+  /** Default overlay z-index */
   OVERLAY_Z_INDEX: 2147483647,
   
-  /** Extension message timeout in ms */
+  /** Default extension message timeout in ms */
   EXTENSION_TIMEOUT: 30000,
+  
+  /** Default input debounce delay in ms */
+  INPUT_DEBOUNCE: 300,
+  
+  /** Default max iframe depth */
+  MAX_IFRAME_DEPTH: 10,
 } as const;
 
 /**
  * Message type constants
  */
 export const MESSAGE_TYPES = {
-  // Content to extension
-  LOG_EVENT: 'logEvent',
-  STEP_RESULT: 'step_result',
-  RECORDING_STARTED: 'recording_started',
-  RECORDING_STOPPED: 'recording_stopped',
-  REPLAY_COMPLETE: 'replay_complete',
-  CONTENT_READY: 'content_script_ready',
-  ERROR: 'error',
+  // Content to Extension
+  LOG_EVENT: 'logEvent' as const,
+  PAGE_LOADED: 'pageLoaded' as const,
+  RECORDING_ERROR: 'recordingError' as const,
+  STEP_COMPLETE: 'stepComplete' as const,
+  STEP_ERROR: 'stepError' as const,
+  CONTENT_READY: 'contentReady' as const,
+  IFRAME_ATTACHED: 'iframeAttached' as const,
   
-  // Extension to content
-  START_RECORDING: 'start_recording',
-  STOP_RECORDING: 'stop_recording',
-  EXECUTE_REPLAY: 'execute_replay',
-  EXECUTE_STEP: 'execute_step',
-  PING: 'ping',
-  GET_STATE: 'get_state',
-  INJECT_INTERCEPTOR: 'inject_interceptor',
+  // Extension to Content
+  START_RECORDING: 'startRecording' as const,
+  STOP_RECORDING: 'stopRecording' as const,
+  RUN_STEP: 'runStep' as const,
+  PING: 'ping' as const,
+  GET_STATE: 'getState' as const,
+  ATTACH_IFRAMES: 'attachIframes' as const,
+  DETACH_IFRAMES: 'detachIframes' as const,
   
-  // Page context
-  REPLAY_AUTOCOMPLETE: 'REPLAY_AUTOCOMPLETE',
-  AUTOCOMPLETE_INPUT: 'AUTOCOMPLETE_INPUT',
-  AUTOCOMPLETE_SELECTION: 'AUTOCOMPLETE_SELECTION',
-  SHADOW_ROOT_EXPOSED: 'SHADOW_ROOT_EXPOSED',
-  PAGE_SCRIPT_READY: 'PAGE_SCRIPT_READY',
-  EXECUTE_IN_PAGE: 'EXECUTE_IN_PAGE',
+  // Page Context
+  AUTOCOMPLETE_INPUT: 'AUTOCOMPLETE_INPUT' as const,
+  AUTOCOMPLETE_SELECTION: 'AUTOCOMPLETE_SELECTION' as const,
+  REPLAY_AUTOCOMPLETE: 'REPLAY_AUTOCOMPLETE' as const,
+  SHADOW_ROOT_ATTACHED: 'SHADOW_ROOT_ATTACHED' as const,
+  PAGE_SCRIPT_READY: 'PAGE_SCRIPT_READY' as const,
+  PAGE_SCRIPT_ERROR: 'PAGE_SCRIPT_ERROR' as const,
 } as const;
 
 /**
@@ -234,7 +317,24 @@ export const NOTIFICATION_TYPES = {
   SUCCESS: 'success' as const,
   ERROR: 'error' as const,
   INFO: 'info' as const,
-};
+} as const;
+
+/**
+ * Recording event type constants
+ */
+export const RECORDED_EVENT_TYPES = {
+  CLICK: 'click' as const,
+  INPUT: 'input' as const,
+  CHANGE: 'change' as const,
+  ENTER: 'enter' as const,
+  SELECT: 'select' as const,
+  FOCUS: 'focus' as const,
+  BLUR: 'blur' as const,
+  SUBMIT: 'submit' as const,
+  NAVIGATION: 'navigation' as const,
+  AUTOCOMPLETE_INPUT: 'autocomplete_input' as const,
+  AUTOCOMPLETE_SELECTION: 'autocomplete_selection' as const,
+} as const;
 
 // ============================================================================
 // UTILITY FUNCTIONS
@@ -348,6 +448,8 @@ export function createElementNotFoundError(
  * Reset all content module singletons (for testing)
  */
 export function resetAllContentSingletons(): void {
+  resetEventRecorder();
+  resetIframeManager();
   resetContextBridge();
   resetNotificationUI();
 }
@@ -363,6 +465,8 @@ import type {
   RecordedEventType,
 } from './IContentScript';
 
+import { resetEventRecorder } from './EventRecorder';
+import { resetIframeManager } from './IframeManager';
 import { resetContextBridge } from './ContextBridge';
 import { resetNotificationUI } from './NotificationUI';
 
