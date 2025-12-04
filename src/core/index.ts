@@ -144,9 +144,141 @@ export * from './csv';
 // CONTENT MODULE
 // ============================================================================
 
-// Note: formatStepProgress, formatRowProgress, formatReplayProgress are content-specific
-// For other progress formatting, see respective modules
-export * from './content';
+export {
+  // Mode types
+  type ContentScriptMode,
+  type ContentScriptState,
+  type RecordingState,
+  type ReplayState,
+  
+  // Event types
+  type RecordedEventType,
+  type RecordedEvent,
+  type IframeInfo,
+  
+  // Message types
+  type ContentToExtensionMessage,
+  type ExtensionToContentMessage,
+  type PageContextMessage,
+  type StepExecutionRequest,
+  type StepExecutionResponse,
+  
+  // Notification types
+  type NotificationType,
+  type NotificationConfig,
+  
+  // Handler types
+  type RecordedEventHandler,
+  type ModeChangeHandler,
+  type ContentErrorHandler,
+  
+  // Interfaces
+  type IEventRecorder,
+  type IStepReplayer,
+  type IIframeManager,
+  type IShadowDOMHandler,
+  type IContextBridge,
+  type INotificationUI,
+  type IContentScript,
+  type ContentScriptFactory,
+  
+  // Constants (IContentScript)
+  DEFAULT_STEP_TIMEOUT,
+  DEFAULT_NOTIFICATION_DURATION,
+  PAGE_SCRIPT_SOURCE,
+  CONTENT_SCRIPT_SOURCE,
+  INPUT_EVENT_TYPES,
+  CLICK_EVENT_TYPES,
+  isInputEventType,
+  isClickEventType,
+  createEmptyRecordingState,
+  createEmptyReplayState,
+  createInitialContentState,
+  createRecordedEvent,
+  createStepResponse,
+  serializeIframeChain,
+  createContentMessage,
+  createNotification,
+  
+  // EventRecorder
+  type EventRecorderConfig,
+  DEFAULT_RECORDER_CONFIG,
+  EventRecorder,
+  createEventRecorder,
+  createDebugRecorder,
+  createFullRecorder,
+  getEventRecorder,
+  resetEventRecorder,
+  generateXPath,
+  getElementLabel,
+  getElementValue,
+  buildLocatorBundle,
+  getEventTarget,
+  determineEventType,
+  
+  // IframeManager
+  type IframeManagerConfig,
+  DEFAULT_IFRAME_MANAGER_CONFIG,
+  IframeManager,
+  createIframeManager,
+  createDebugIframeManager,
+  createManualIframeManager,
+  getIframeManager,
+  resetIframeManager,
+  isCrossOriginIframe,
+  getIframeDocument,
+  createIframeInfo,
+  findIframesInDocument,
+  
+  // ContextBridge
+  type ExtensionMessageHandler,
+  type PageMessageHandler,
+  type ContextBridgeConfig,
+  DEFAULT_BRIDGE_CONFIG,
+  ContextBridge,
+  createContextBridge,
+  createInitializedBridge,
+  createDebugBridge,
+  getContextBridge,
+  resetContextBridge,
+  MockContextBridge,
+  createMockContextBridge,
+  
+  // NotificationUI
+  type NotificationUIConfig,
+  DEFAULT_UI_CONFIG,
+  NOTIFICATION_COLORS,
+  NOTIFICATION_ICONS,
+  NotificationUI,
+  createNotificationUI,
+  createPositionedNotificationUI,
+  createSimpleNotificationUI,
+  getNotificationUI,
+  resetNotificationUI,
+  MockNotificationUI,
+  createMockNotificationUI,
+  
+  // Content convenience exports
+  CONTENT_VERSION,
+  CONTENT_DEFAULTS,
+  MESSAGE_TYPES,
+  NOTIFICATION_TYPES,
+  RECORDED_EVENT_TYPES,
+  isContentScriptContext,
+  isPageContext,
+  getCurrentPageUrl,
+  getCurrentPageOrigin,
+  formatStepProgress,
+  formatRowProgress,
+  formatReplayProgress,
+  createTimeoutError,
+  createElementNotFoundError,
+  resetAllContentSingletons,
+  isContentToExtensionMessage,
+  isExtensionToContentMessage,
+  isPageContextMessage,
+  isValidRecordedEventType,
+} from './content';
 
 // ============================================================================
 // UI MODULE
@@ -314,6 +446,8 @@ export const ALL_DEFAULTS = {
     notificationDuration: 3000,
     animationDuration: 300,
     extensionTimeout: 30000,
+    inputDebounce: 300,
+    maxIframeDepth: 10,
   },
   ui: {
     pageSize: 10,
