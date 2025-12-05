@@ -32,6 +32,9 @@
   "web_accessible_resources": [
     {
       "resources": [
+        "js/interceptor.js",
+        "js/replay.js",
+        "js/main.js",
         "*"
       ],
       "matches": [
