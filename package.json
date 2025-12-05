@@ -95,7 +95,7 @@
     "dexie": "^4.0.11",
     "firebase": "^11.9.1",
     "flowbite": "^2.4.1",
-    "flowbite-react": "^0.10.1",
+    "flowbite-react": "^0.12.10",
     "get-xpath": "^3.3.0",
     "jquery": "^3.7.1",
     "lucide-react": "^0.533.0",
