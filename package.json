@@ -13,7 +13,15 @@
     "watch:build": "nodemon --watch src --ext js,jsx,ts,tsx,json,css --exec \"npm run build && npm run postbuild\"",
     "test": "vitest run --config vitest.config.test.ts",
     "test:watch": "vitest --config vitest.config.test.ts",
-    "type-check": "tsc --noEmit"
+    "test:ui": "vitest --ui",
+    "test:coverage": "vitest run --coverage",
+    "test:ci": "vitest run --reporter=verbose --coverage",
+    "type-check": "tsc --noEmit",
+    "type-check:watch": "tsc --noEmit --watch",
+    "type-check:app": "tsc --noEmit -p tsconfig.app.json",
+    "type-check:test": "tsc --noEmit -p tsconfig.test.json",
+    "type-check:node": "tsc --noEmit -p tsconfig.node.json",
+    "prebuild": "npm run type-check"
   },
   "dependencies": {
     "@emotion/cache": "^11.11.0",

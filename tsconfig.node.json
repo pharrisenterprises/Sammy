@@ -1,10 +1,60 @@
 {
+  "$schema": "https://json.schemastore.org/tsconfig",
   "compilerOptions": {
-    "composite": true,
-    "skipLibCheck": true,
+    // ========================================================================
+    // TARGET & MODULE (Node.js)
+    // ========================================================================
+    "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "allowSyntheticDefaultImports": true
+    "lib": ["ES2022"],
+
+    // ========================================================================
+    // STRICT TYPE CHECKING
+    // ========================================================================
+    "strict": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+
+    // ========================================================================
+    // INTEROP
+    // ========================================================================
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+
+    // ========================================================================
+    // EMIT
+    // ========================================================================
+    "noEmit": true,
+
+    // ========================================================================
+    // TYPE ACQUISITION
+    // ========================================================================
+    "types": ["node"],
+    "skipLibCheck": true,
+
+    // ========================================================================
+    // PATH RESOLUTION
+    // ========================================================================
+    "resolveJsonModule": true,
+    "allowImportingTsExtensions": true
   },
-  "include": ["vite.config.ts"]
+
+  "include": [
+    "vite.config.ts",
+    "vite.config.bg.ts",
+    "vite.config.page.ts",
+    "vitest.config.ts",
+    "tailwind.config.ts",
+    "postcss.config.ts",
+    "scripts/**/*.ts"
+  ],
+
+  "exclude": [
+    "node_modules",
+    "dist",
+    "src"
+  ]
 }

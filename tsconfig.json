@@ -1,27 +1,120 @@
 {
+  "$schema": "https://json.schemastore.org/tsconfig",
   "compilerOptions": {
-    "target": "es6",
-    "useDefineForClassFields": true,
-    "lib": ["ES2020", "DOM", "DOM.Iterable"],
-    "module": "esnext",
-    "skipLibCheck": true,
-    "allowJs": true,
-
-    /* Bundler mode */
+    // ========================================================================
+    // TARGET & MODULE
+    // ========================================================================
+    "target": "ES2020",
+    "module": "ESNext",
     "moduleResolution": "bundler",
-    "allowImportingTsExtensions": true,
-    "resolveJsonModule": true,
-    "isolatedModules": true,
-    "noEmit": true,
-    "jsx": "react-jsx",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
 
-    /* Linting */
+    // ========================================================================
+    // JSX
+    // ========================================================================
+    "jsx": "react-jsx",
+    "jsxImportSource": "react",
+
+    // ========================================================================
+    // STRICT TYPE CHECKING
+    // ========================================================================
     "strict": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "strictFunctionTypes": true,
+    "strictBindCallApply": true,
+    "strictPropertyInitialization": true,
+    "noImplicitThis": true,
+    "useUnknownInCatchVariables": true,
+    "alwaysStrict": true,
+
+    // ========================================================================
+    // ADDITIONAL CHECKS
+    // ========================================================================
     "noUnusedLocals": true,
     "noUnusedParameters": true,
+    "exactOptionalPropertyTypes": false,
+    "noImplicitReturns": true,
     "noFallthroughCasesInSwitch": true,
-    "types": ["chrome", "webextension-polyfill"]
+    "noUncheckedIndexedAccess": false,
+    "noImplicitOverride": true,
+    "noPropertyAccessFromIndexSignature": false,
+    "allowUnusedLabels": false,
+    "allowUnreachableCode": false,
+
+    // ========================================================================
+    // INTEROP
+    // ========================================================================
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": false,
+
+    // ========================================================================
+    // EMIT
+    // ========================================================================
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": true,
+    "removeComments": false,
+
+    // ========================================================================
+    // PATH RESOLUTION
+    // ========================================================================
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"],
+      "@/core": ["src/core/index.ts"],
+      "@/core/*": ["src/core/*"],
+      "@/components": ["src/components/index.ts"],
+      "@/components/*": ["src/components/*"],
+      "@/hooks": ["src/hooks/index.ts"],
+      "@/hooks/*": ["src/hooks/*"],
+      "@/context": ["src/context/index.ts"],
+      "@/context/*": ["src/context/*"],
+      "@/pages": ["src/pages/index.ts"],
+      "@/pages/*": ["src/pages/*"],
+      "@/background": ["src/background/index.ts"],
+      "@/background/*": ["src/background/*"],
+      "@/contentScript": ["src/contentScript/index.ts"],
+      "@/contentScript/*": ["src/contentScript/*"],
+      "@/test": ["src/test/index.ts"],
+      "@/test/*": ["src/test/*"],
+      "@/routes": ["src/routes/index.ts"],
+      "@/routes/*": ["src/routes/*"],
+      "@/utils": ["src/utils/index.ts"],
+      "@/utils/*": ["src/utils/*"]
+    },
+    "resolveJsonModule": true,
+    "allowImportingTsExtensions": true,
+
+    // ========================================================================
+    // TYPE ACQUISITION
+    // ========================================================================
+    "types": ["vite/client", "chrome", "node"],
+    "skipLibCheck": true
   },
-  "include": ["src", "src/background/background.ts"],
-  "references": [{ "path": "./tsconfig.node.json" }]
+
+  // ==========================================================================
+  // FILE INCLUSION
+  // ==========================================================================
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "src/**/*.d.ts",
+    "vite.config.ts",
+    "vitest.config.ts",
+    "vitest.setup.ts"
+  ],
+
+  "exclude": [
+    "node_modules",
+    "dist",
+    "build",
+    "coverage",
+    "*.config.js",
+    "scripts/**/*.js"
+  ]
 }
