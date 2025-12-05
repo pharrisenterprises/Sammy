@@ -160,7 +160,7 @@ jobs:
           echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/$LAST_TAG...v${{ needs.validate.outputs.version }}" >> changelog.md
       
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           name: Sammy Test Automation v${{ needs.validate.outputs.version }}
           tag_name: v${{ needs.validate.outputs.version }}
