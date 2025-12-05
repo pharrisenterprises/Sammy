@@ -1,0 +1,91 @@
+# CODEOWNERS
+# ===========================================================================
+# Defines code ownership for automated review requests.
+# When a PR modifies files matching these patterns, the specified owners
+# are automatically requested for review.
+# ===========================================================================
+
+# Default owner for everything
+* @pharrisenterprises
+
+# ===========================================================================
+# CORE MODULES
+# ===========================================================================
+
+# Storage layer
+/src/core/storage/ @pharrisenterprises
+/src/core/storage-engine/ @pharrisenterprises
+
+# Message bus
+/src/core/message-bus/ @pharrisenterprises
+
+# Recording engine
+/src/core/recording/ @pharrisenterprises
+
+# Replay engine
+/src/core/replay/ @pharrisenterprises
+
+# CSV processing
+/src/core/csv/ @pharrisenterprises
+
+# Locator strategy
+/src/core/locator/ @pharrisenterprises
+
+# Test orchestrator
+/src/core/orchestrator/ @pharrisenterprises
+
+# ===========================================================================
+# UI COMPONENTS
+# ===========================================================================
+
+/src/components/ @pharrisenterprises
+/src/pages/ @pharrisenterprises
+/src/ui/ @pharrisenterprises
+
+# ===========================================================================
+# BROWSER EXTENSION
+# ===========================================================================
+
+/src/background/ @pharrisenterprises
+/src/contentScript/ @pharrisenterprises
+/public/manifest.json @pharrisenterprises
+
+# ===========================================================================
+# CONFIGURATION & BUILD
+# ===========================================================================
+
+# Build configuration
+/vite.config*.ts @pharrisenterprises
+/tsconfig*.json @pharrisenterprises
+/package.json @pharrisenterprises
+/scripts/ @pharrisenterprises
+
+# Linting and formatting
+/eslint.config.js @pharrisenterprises
+/.prettierrc @pharrisenterprises
+
+# Tailwind and PostCSS
+/tailwind.config.js @pharrisenterprises
+/postcss.config.js @pharrisenterprises
+
+# ===========================================================================
+# TESTING
+# ===========================================================================
+
+/src/test/ @pharrisenterprises
+/vitest.config*.ts @pharrisenterprises
+/vitest.setup.ts @pharrisenterprises
+
+# ===========================================================================
+# CI/CD & GITHUB
+# ===========================================================================
+
+/.github/ @pharrisenterprises
+/.github/workflows/ @pharrisenterprises
+
+# ===========================================================================
+# DOCUMENTATION
+# ===========================================================================
+
+/README.md @pharrisenterprises
+/analysis-resources/ @pharrisenterprises
