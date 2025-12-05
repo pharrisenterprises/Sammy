@@ -1,0 +1,44 @@
+# Build output
+dist/
+build/
+coverage/
+
+# Dependencies
+node_modules/
+
+# Generated files
+*.d.ts
+!src/**/*.d.ts
+!src/types/**/*.d.ts
+
+# Cache
+.eslintcache
+*.tsbuildinfo
+
+# Config files (handled separately)
+*.config.js
+!eslint.config.js
+
+# Scripts
+scripts/**/*.js
+
+# Assets
+public/
+*.json
+*.md
+*.css
+*.html
+*.svg
+*.png
+*.ico
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Test artifacts
+test-results/
+playwright-report/

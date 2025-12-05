@@ -1,0 +1,26 @@
+# Build output
+dist/
+build/
+coverage/
+
+# Dependencies
+node_modules/
+
+# Generated files
+*.d.ts
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+
+# Assets
+*.svg
+*.png
+*.ico
+*.woff
+*.woff2
+*.ttf
+*.eot
+
+# Minified
+*.min.js
+*.min.css
