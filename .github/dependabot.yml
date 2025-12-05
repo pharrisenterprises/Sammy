@@ -1,0 +1,90 @@
+# ============================================================================
+# Dependabot Configuration
+# ============================================================================
+# Automated dependency updates for npm packages and GitHub Actions.
+# ============================================================================
+
+version: 2
+
+updates:
+  # NPM dependencies
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 10
+    
+    # Group minor and patch updates
+    groups:
+      development:
+        patterns:
+          - "@types/*"
+          - "eslint*"
+          - "prettier"
+          - "typescript*"
+          - "vitest"
+          - "@vitest/*"
+          - "@testing-library/*"
+        update-types:
+          - "minor"
+          - "patch"
+      
+      build-tools:
+        patterns:
+          - "vite*"
+          - "@vitejs/*"
+          - "tailwindcss"
+          - "postcss"
+          - "autoprefixer"
+        update-types:
+          - "minor"
+          - "patch"
+      
+      react:
+        patterns:
+          - "react"
+          - "react-dom"
+          - "react-router*"
+        update-types:
+          - "minor"
+          - "patch"
+    
+    # Ignore patterns
+    ignore:
+      # Don't update major versions automatically
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    
+    # Commit message format
+    commit-message:
+      prefix: "deps"
+      prefix-development: "deps(dev)"
+    
+    # Labels for PRs
+    labels:
+      - "dependencies"
+      - "automated"
+    
+    # Reviewers
+    reviewers:
+      - "pharrisenterprises"
+
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 5
+    
+    commit-message:
+      prefix: "ci"
+    
+    labels:
+      - "github-actions"
+      - "automated"
