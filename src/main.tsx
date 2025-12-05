@@ -1,82 +1,88 @@
-import ReactDOM from "react-dom/client";
-import Layout from "./contentScript/content.tsx";
-//import cssStyles from "./css/InputAiPopup.css?inline"; // Ensure Vite inlines the CSS
-import App from "./App.tsx";
-import { HashRouter as Router } from "react-router-dom";
-import { Provider } from "react-redux";
-import { store } from "./redux/store.ts";
-import OptionalPages from "./components/Pages/index.tsx";
-import { Toaster } from "./components/Ui/toaster.tsx";
-//import { metropolisFonts } from "./common/utils/fontsUtils.ts";
-//import { pageCss } from "./css/inject.ts";
+/**
+ * Main - Application Entry Point
+ * @module main
+ * @version 1.0.0
+ * 
+ * Entry point for the React application.
+ * Renders the App component into the DOM.
+ * 
+ * This file is referenced by:
+ * - vite.config.ts as the main entry point
+ * - public/index.html, popup.html, pages.html
+ */
 
-setTimeout(() => {
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import App from './App';
 
-    const demo = document.querySelector('body');
-    const boxType = demo?.getAttribute('dom');
-    if (boxType === 'popup') {
-        // Create a new <div> element to serve as the root container for the React app
-        const root = document.querySelector("body");
+// Import global styles
+import './index.css';
 
-        // Render the React application into the root container
-        if (root) {
-            ReactDOM.createRoot(root).render(
-                <Router>
-                    <Provider store={store}>
-                        <App />
-                    </Provider>
-                </Router>
-            );
-        }
+// ============================================================================
+// ENVIRONMENT CHECK
+// ============================================================================
 
-    }
+/**
+ * Check if running in extension context
+ */
+const isExtensionContext = (): boolean => {
+  return typeof chrome !== 'undefined' && chrome.runtime?.id !== undefined;
+};
 
-    if (boxType === 'dashboard') {
-        // Create a new <div> element to serve as the root container for the React app
-        const root = document.querySelector("body");
+/**
+ * Log environment info in development
+ */
+if (import.meta.env.DEV) {
+  console.log('🚀 Sammy Test Automation');
+  console.log(`Mode: ${import.meta.env.MODE}`);
+  console.log(`Extension context: ${isExtensionContext()}`);
+}
 
-        // Render the React application into the root container
-        if (root) {
-            ReactDOM.createRoot(root).render(
-                <Router>
-                    <Toaster />
-                    <Provider store={store}>
-                        <OptionalPages />
-                    </Provider>
-                </Router>
-            );
-        }
-    }
+// ============================================================================
+// RENDER APPLICATION
+// ============================================================================
 
-    if (boxType != 'dashboard' && boxType != 'popup' && !boxType) {
-        // Create a new div for the extension root
-        const div = document.createElement("div");
-        div.id = "recorder-extension-root";
+/**
+ * Get or create root element
+ */
+const getRootElement = (): HTMLElement => {
+  let root = document.getElementById('root');
+  
+  if (!root) {
+    root = document.createElement('div');
+    root.id = 'root';
+    document.body.appendChild(root);
+  }
+  
+  return root;
+};
 
-        // Attach Shadow DOM
-        const shadowRoot = div.attachShadow({ mode: "open" });
-        document.body.appendChild(div);
+/**
+ * Initialize and render the application
+ */
+const init = (): void => {
+  const rootElement = getRootElement();
+  const root = ReactDOM.createRoot(rootElement);
 
-        // Create a container inside the Shadow DOM
-        const reactRoot = document.createElement("div");
-        shadowRoot.appendChild(reactRoot);
+  root.render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>
+  );
+};
 
-        // Inject CSS inside Shadow DOM
-        // const style = document.createElement("style");
-        // style.textContent = cssStyles; // Insert CSS content
-        // shadowRoot.appendChild(style);
+// Initialize when DOM is ready
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init);
+} else {
+  init();
+}
 
-        // // Inject CSS inside Shadow DOM
-        // const styleFont = document.createElement("style");
-        // styleFont.textContent = metropolisFonts; // Insert CSS content
-        // shadowRoot.appendChild(styleFont);
+// ============================================================================
+// HOT MODULE REPLACEMENT
+// ============================================================================
 
-        // // Inject CSS inside Shadow DOM
-        // const stylePageCss = document.createElement("style");
-        // stylePageCss.textContent = pageCss; // Insert CSS content
-        // shadowRoot.appendChild(stylePageCss);
-
-        // Render the React app inside Shadow DOM
-        ReactDOM.createRoot(reactRoot).render(<Provider store={store}><Layout /></Provider>);
-    }
-})
+// Enable HMR in development
+if (import.meta.hot) {
+  import.meta.hot.accept();
+}
